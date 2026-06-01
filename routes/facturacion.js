@@ -251,6 +251,16 @@ router.get('/datos/presentacion', auth, async (req, res) => {
   } catch (e) { err(res, req, e); }
 });
 
+router.post('/datos/presentacion', auth, async (req, res) => {
+  try {
+    if (!esAdmin(req.user)) return res.status(403).json({ ok: false, mensaje: 'Sin permisos.' });
+    const id = randomUUID();
+    const doc = { ...req.body, id, creadoPor: nombreUsuario(req.user), creadoEn: new Date().toISOString() };
+    await col(req.tenantId, 'presentacion_docs').doc(id).set(doc);
+    res.json({ ok: true, id, mensaje: 'Registro guardado.' });
+  } catch (e) { err(res, req, e); }
+});
+
 router.get('/datos/altas', auth, async (req, res) => {
   try {
     if (!esAdmin(req.user)) return res.status(403).json({ ok: false, mensaje: 'Sin permisos.' });
@@ -260,12 +270,32 @@ router.get('/datos/altas', auth, async (req, res) => {
   } catch (e) { err(res, req, e); }
 });
 
+router.post('/datos/altas', auth, async (req, res) => {
+  try {
+    if (!esAdmin(req.user)) return res.status(403).json({ ok: false, mensaje: 'Sin permisos.' });
+    const id = randomUUID();
+    const doc = { ...req.body, id, creadoPor: nombreUsuario(req.user), creadoEn: new Date().toISOString() };
+    await col(req.tenantId, 'altas_pres').doc(id).set(doc);
+    res.json({ ok: true, id, mensaje: 'Alta registrada.' });
+  } catch (e) { err(res, req, e); }
+});
+
 router.get('/datos/cambio-transporte', auth, async (req, res) => {
   try {
     if (!esAdmin(req.user)) return res.status(403).json({ ok: false, mensaje: 'Sin permisos.' });
     const snap = await col(req.tenantId, 'cambio_transporte').get();
     const docs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
     res.json({ ok: true, registros: docs, headers: docs[0] ? Object.keys(docs[0]).filter(k => !k.startsWith('_')) : [] });
+  } catch (e) { err(res, req, e); }
+});
+
+router.post('/datos/cambio-transporte', auth, async (req, res) => {
+  try {
+    if (!esAdmin(req.user)) return res.status(403).json({ ok: false, mensaje: 'Sin permisos.' });
+    const id = randomUUID();
+    const doc = { ...req.body, id, creadoPor: nombreUsuario(req.user), creadoEn: new Date().toISOString() };
+    await col(req.tenantId, 'cambio_transporte').doc(id).set(doc);
+    res.json({ ok: true, id, mensaje: 'Nota guardada.' });
   } catch (e) { err(res, req, e); }
 });
 
