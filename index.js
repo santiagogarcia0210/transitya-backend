@@ -28,6 +28,7 @@ app.use('/api/ingresos', require('./routes/ingresos'));
 app.use('/api/facturacion', require('./routes/facturacion'));
 app.use('/api/paqueteria', require('./routes/paqueteria'));
 app.use('/api/traslado', require('./routes/traslado'));
+app.use('/api/empresa', require('./routes/empresa'));
 app.use('/api/superadmin', require('./routes/superadmin'));
 app.use('/api/geo', require('./routes/geocodificacion'));
 
