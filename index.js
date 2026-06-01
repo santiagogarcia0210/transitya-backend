@@ -19,6 +19,11 @@ app.use('/api/ubicaciones', require('./routes/ubicaciones'));
 app.use('/api/vencimientos', require('./routes/vencimientos'));
 app.use('/api/ia', require('./routes/ia'));
 app.use('/api/ingresos', require('./routes/ingresos'));
+app.use('/api/facturacion', require('./routes/facturacion'));
+app.use('/api/paqueteria', require('./routes/paqueteria'));
+app.use('/api/traslado', require('./routes/traslado'));
+app.use('/api/superadmin', require('./routes/superadmin'));
+app.use('/api/geo', require('./routes/geocodificacion'));
 
 app.get('/health', (req, res) => res.json({ ok: true, version: '1.0.0' }));
 
