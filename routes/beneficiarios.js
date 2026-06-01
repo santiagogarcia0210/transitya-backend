@@ -11,6 +11,7 @@ const err = (res, req, e) => {
 // Listar / buscar beneficiarios
 router.get('/', auth, async (req, res) => {
   try {
+    console.log('[BENEF] tenantId:', req.tenantId);
     const { termino } = req.query;
     const snap = await col(req.tenantId, 'registro').get();
     let items = snap.docs.map(d => ({ id: d.id, ...d.data() }));

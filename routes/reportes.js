@@ -10,6 +10,7 @@ const err = (res, req, e) => {
 
 router.get('/', auth, async (req, res) => {
   try {
+    console.log('[REPORTES] tenantId:', req.tenantId);
     const { fecha } = req.query;
     const snap = await col(req.tenantId, 'reportes').get();
     let todos = snap.docs.map(d => ({ id: d.id, ...d.data() }));
