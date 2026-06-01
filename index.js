@@ -3,7 +3,16 @@ const express = require('express');
 const cors = require('cors');
 const app = express();
 
-app.use(cors({ origin: ['https://transitya.com', 'http://localhost:3000', 'http://localhost:3001'] }));
+app.use(cors({
+  origin: [
+    'https://transitya.com',
+    'https://transitya-frontend.vercel.app',
+    'https://transitya-frontend-git-main-santiago-garcia-s-projects1.vercel.app',
+    'http://localhost:3000',
+    'http://localhost:3001'
+  ],
+  credentials: true
+}));
 app.use(express.json());
 
 // Rutas
