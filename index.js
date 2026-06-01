@@ -4,13 +4,10 @@ const cors = require('cors');
 const app = express();
 
 app.use(cors({
-  origin: [
-    'https://transitya.com',
-    'https://transitya-frontend.vercel.app',
-    'https://transitya-frontend-git-main-santiago-garcia-s-projects1.vercel.app',
-    'http://localhost:3000',
-    'http://localhost:3001'
-  ],
+  origin: (origin, cb) => {
+    const allowed = !origin || /transitya\.com$|vercel\.app$|localhost/.test(origin);
+    cb(null, allowed);
+  },
   credentials: true
 }));
 app.use(express.json());
