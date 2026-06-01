@@ -13,6 +13,7 @@ app.use(cors({
 app.use(express.json());
 
 // Rutas
+app.use('/api/dashboard', require('./routes/dashboard'));
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/beneficiarios', require('./routes/beneficiarios'));
 app.use('/api/usuarios', require('./routes/usuarios'));
