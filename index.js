@@ -18,6 +18,7 @@ app.use('/api/reportes', require('./routes/reportes'));
 app.use('/api/ubicaciones', require('./routes/ubicaciones'));
 app.use('/api/vencimientos', require('./routes/vencimientos'));
 app.use('/api/ia', require('./routes/ia'));
+app.use('/api/ingresos', require('./routes/ingresos'));
 
 app.get('/health', (req, res) => res.json({ ok: true, version: '1.0.0' }));
 
