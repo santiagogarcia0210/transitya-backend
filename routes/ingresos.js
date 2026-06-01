@@ -13,6 +13,7 @@ router.get('/', auth, async (req, res) => {
     if (!esAdmin(req.user)) return res.status(403).json({ ok: false, mensaje: 'Sin permisos.' });
     const { termino, pagina } = req.query;
     const snap = await col(req.tenantId, 'ingresos').get();
+    console.log('[INGRESOS] docs found:', snap.size, 'tenantId:', req.tenantId);
     let todos = snap.docs.map(d => ({ id: d.id, ...d.data() }));
     if (termino) {
       const q = normalizarText_(termino);

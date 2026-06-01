@@ -11,6 +11,7 @@ const err = (res, req, e) => {
 router.get('/', auth, async (req, res) => {
   try {
     const snap = await col(req.tenantId, 'egresos').get();
+    console.log('[EGRESOS] docs found:', snap.size, 'tenantId:', req.tenantId);
     let todos = snap.docs.map(d => ({ id: d.id, ...d.data() }));
     const admin = esAdmin(req.user);
     const usuario = nombreUsuario(req.user);

@@ -13,6 +13,7 @@ router.get('/', auth, async (req, res) => {
     console.log('[REPORTES] tenantId:', req.tenantId);
     const { fecha } = req.query;
     const snap = await col(req.tenantId, 'reportes').get();
+    console.log('[REPORTES] docs found:', snap.size, 'tenantId:', req.tenantId);
     let todos = snap.docs.map(d => ({ id: d.id, ...d.data() }));
     const admin = esAdmin(req.user);
     const usuario = nombreUsuario(req.user);
