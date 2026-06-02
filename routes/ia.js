@@ -15,7 +15,7 @@ router.post('/optimizar-recorrido', verifyToken, async (req, res) => {
     const listaTexto = paradas.map((p, i) => `${i}. ${p.nombre} — ${p.domicilio} (lat: ${p.lat}, lng: ${p.lng})`).join('\n');
 
     const message = await anthropic.messages.create({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-sonnet-4-6',
       max_tokens: 1000,
       messages: [{
         role: 'user',

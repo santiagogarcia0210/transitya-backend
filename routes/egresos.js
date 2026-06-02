@@ -134,7 +134,8 @@ router.post('/escanear', verifyToken, async (req, res) => {
         ],
       }],
     });
-    const datos = JSON.parse(msg.content[0].text);
+    const raw   = msg.content[0].text.replace(/```json?|```/g, '').trim();
+    const datos = JSON.parse(raw);
     res.json({ ok: true, datos });
   } catch (e) { errHandler(res, req, e); }
 });
