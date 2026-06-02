@@ -159,4 +159,51 @@ router.delete('/:id', verifyToken, requireAdmin, async (req, res) => {
   } catch (e) { errHandler(res, req, e); }
 });
 
+// ── PDF DATA ─────────────────────────────────────────────────────────────────
+
+router.get('/pdf-data', verifyToken, async (req, res) => {
+  try {
+    const { desde, hasta } = req.query;
+    let { chofer } = req.query;
+    const isAdmin = req.user.rol === 'admin' || req.user.rol === 'administrador';
+    if (!isAdmin) chofer = req.user.email;
+
+    const snap = await col(req.tenantId, 'remitos').get();
+    let remitos = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+
+    if (chofer) {
+      const cn = normalizarText_(chofer);
+      remitos = remitos.filter(r => normalizarText_(r.chofer || r.CHOFER || '') === cn);
+    }
+    if (desde || hasta) {
+      const dDesde = desde ? new Date(desde) : null;
+      const dHasta = hasta ? new Date(hasta) : null;
+      remitos = remitos.filter(r => {
+        const p = String(r.fecha || r.FECHA || '').split('/');
+        if (p.length < 3) return false;
+        const y  = Number(p[2].length === 2 ? '20' + p[2] : p[2]);
+        const fd = new Date(y, Number(p[1]) - 1, Number(p[0]));
+        if (dDesde && fd < dDesde) return false;
+        if (dHasta && fd > dHasta) return false;
+        return true;
+      });
+    }
+    remitos.sort((a, b) => fechaSort(b.fecha || b.FECHA) - fechaSort(a.fecha || a.FECHA));
+
+    const totalLitros = remitos.reduce((s, r) => s + (Number(r.combustible || r.COMBUSTIBLE || 0)), 0);
+    const totalMonto  = remitos.reduce((s, r) => {
+      const m = String(r.monto || r.MONTO || '0').replace(/[^0-9.,]/g, '').replace(',', '.');
+      return s + (parseFloat(m) || 0);
+    }, 0);
+
+    res.json({
+      ok: true, remitos,
+      totales: { totalLitros, totalMonto, cantRemitos: remitos.length },
+      chofer: chofer || 'Todos',
+      desde: desde || '', hasta: hasta || '',
+      generado: fechaHoyAR(),
+    });
+  } catch (e) { errHandler(res, req, e); }
+});
+
 module.exports = router;

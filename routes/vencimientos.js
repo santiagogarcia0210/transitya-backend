@@ -1,33 +1,50 @@
 const router = require('express').Router();
-const { db } = require('../firebase');
-const auth = require('../middleware/authMiddleware');
-const { normalizarText_, esAdmin, fechaHoyAR, col, randomUUID } = require('../utils');
+const { verifyToken, requireAdmin } = require('../middleware/auth');
+const { normalizarText_, fechaHoyAR, col, randomUUID } = require('../utils');
 
-const err = (res, req, e) => {
-  console.error('[ERROR vencimientos]', req.path, e.message);
+const errHandler = (res, req, e) => {
+  console.error('[VENCIMIENTOS]', req.path, e.message);
   res.status(500).json({ ok: false, mensaje: e.message });
 };
 
-router.get('/', auth, async (req, res) => {
+const calcEstado = (fechaVenc, diasAviso) => {
+  const p = String(fechaVenc || '').split('/');
+  if (p.length < 3) return { estado: 'SIN FECHA', diffDias: null };
+  const y    = Number(p[2].length === 2 ? '20' + p[2] : p[2]);
+  const fecha = new Date(y, Number(p[1]) - 1, Number(p[0]));
+  const diff  = Math.round((fecha - new Date()) / (1000 * 60 * 60 * 24));
+  const umbral = Number(diasAviso) || 30;
+  const estado = diff < 0 ? 'VENCIDO' : diff <= umbral ? 'PROXIMO' : 'VIGENTE';
+  return { estado, diffDias: diff };
+};
+
+router.get('/', verifyToken, requireAdmin, async (req, res) => {
   try {
-    const filtros = req.query;
+    const { tipo, persona, estado, todos } = req.query;
     const snap = await col(req.tenantId, 'vencimientos').get();
-    const todos = snap.docs.map(d => ({ _fsId: d.id, ...d.data() }));
-    const hoy = new Date();
 
-    let resultado = todos
-      .filter(doc => doc.ID && (filtros.todos || (doc.estado || '').toUpperCase() !== 'ELIMINADO'))
-      .map(doc => {
-        const p = String(doc.fechaVenc || '').split('/');
-        const fecha = p.length >= 3 ? new Date(Number(p[2].length === 2 ? '20' + p[2] : p[2]), Number(p[1]) - 1, Number(p[0])) : null;
-        const diff  = fecha ? Math.round((fecha - hoy) / (1000 * 60 * 60 * 24)) : null;
-        const estado = diff === null ? 'SIN FECHA' : diff < 0 ? 'VENCIDO' : diff <= 30 ? 'PROXIMO' : 'VIGENTE';
-        return { id: doc.ID, tipo: doc.tipo, persona: doc.persona, descripcion: doc.descripcion, fechaVenc: doc.fechaVenc, diasAviso: doc.diasAviso, estado, notas: doc.notas, diffDias: diff };
-      });
+    let resultado = snap.docs.map(d => {
+      const doc = d.data();
+      const { estado: est, diffDias } = calcEstado(doc.fechaVenc, doc.diasAviso);
+      return {
+        id:          doc.ID || d.id,
+        tipo:        doc.tipo        || '',
+        persona:     doc.persona     || '',
+        descripcion: doc.descripcion || '',
+        fechaVenc:   doc.fechaVenc   || '',
+        diasAviso:   doc.diasAviso   || 30,
+        notas:       doc.notas       || '',
+        estado:      est,
+        diffDias,
+      };
+    });
 
-    if (filtros.tipo)    resultado = resultado.filter(r => normalizarText_(r.tipo).includes(normalizarText_(filtros.tipo)));
-    if (filtros.persona) resultado = resultado.filter(r => normalizarText_(r.persona).includes(normalizarText_(filtros.persona)));
-    if (filtros.estado)  resultado = resultado.filter(r => r.estado === filtros.estado);
+    // Exclude soft-deleted unless ?todos=true
+    if (!todos) resultado = resultado.filter(r => r.estado !== 'ELIMINADO');
+
+    if (tipo)    resultado = resultado.filter(r => normalizarText_(r.tipo).includes(normalizarText_(tipo)));
+    if (persona) resultado = resultado.filter(r => normalizarText_(r.persona).includes(normalizarText_(persona)));
+    if (estado)  resultado = resultado.filter(r => r.estado === estado.toUpperCase());
 
     resultado.sort((a, b) => {
       if (a.diffDias === null) return 1;
@@ -37,43 +54,39 @@ router.get('/', auth, async (req, res) => {
 
     const proximos = resultado.filter(r => r.estado === 'VENCIDO' || r.estado === 'PROXIMO');
     res.json({ ok: true, vencimientos: resultado, proximos, total: resultado.length });
-  } catch (e) { err(res, req, e); }
+  } catch (e) { errHandler(res, req, e); }
 });
 
-router.post('/', auth, async (req, res) => {
+router.post('/', verifyToken, requireAdmin, async (req, res) => {
   try {
-    if (!esAdmin(req.user)) return res.status(403).json({ ok: false, mensaje: 'Sin permisos.' });
-    const data = req.body;
-    const id = data.id || randomUUID();
-    const doc = {
-      ID: id, tipo: data.tipo || '', persona: data.persona || '',
-      descripcion: data.descripcion || '', fechaVenc: data.fechaVenc || '',
-      diasAviso: data.diasAviso || 30, estado: 'ACTIVO', notas: data.notas || '',
-      timestamp: fechaHoyAR() + ' ' + new Date().toTimeString().slice(0, 5),
-      creadoEn: new Date()
-    };
-    await col(req.tenantId, 'vencimientos').doc(id).set(doc);
-    res.json({ ok: true, mensaje: data.id ? 'Vencimiento actualizado.' : 'Vencimiento guardado.', id });
-  } catch (e) { err(res, req, e); }
+    const { tipo, persona, descripcion, fechaVenc, diasAviso, notas } = req.body;
+    const id = randomUUID();
+    await col(req.tenantId, 'vencimientos').doc(id).set({
+      ID: id, tipo: tipo || '', persona: persona || '',
+      descripcion: descripcion || '', fechaVenc: fechaVenc || '',
+      diasAviso: Number(diasAviso) || 30, notas: notas || '',
+      estado: 'ACTIVO', creadoEn: new Date(),
+    });
+    res.json({ ok: true, id });
+  } catch (e) { errHandler(res, req, e); }
 });
 
-router.put('/:id', auth, async (req, res) => {
+router.put('/:id', verifyToken, requireAdmin, async (req, res) => {
   try {
-    if (!esAdmin(req.user)) return res.status(403).json({ ok: false, mensaje: 'Sin permisos.' });
-    await col(req.tenantId, 'vencimientos').doc(req.params.id).update({ ...req.body, actualizadoEn: new Date() });
+    await col(req.tenantId, 'vencimientos').doc(req.params.id)
+      .update({ ...req.body, actualizadoEn: new Date() });
     res.json({ ok: true });
-  } catch (e) { err(res, req, e); }
+  } catch (e) { errHandler(res, req, e); }
 });
 
-router.delete('/:id', auth, async (req, res) => {
+router.delete('/:id', verifyToken, requireAdmin, async (req, res) => {
   try {
-    if (!esAdmin(req.user)) return res.status(403).json({ ok: false, mensaje: 'Sin permisos.' });
-    const ref = col(req.tenantId, 'vencimientos').doc(req.params.id);
+    const ref  = col(req.tenantId, 'vencimientos').doc(req.params.id);
     const snap = await ref.get();
     if (!snap.exists) return res.status(404).json({ ok: false, mensaje: 'No encontrado.' });
     await ref.update({ estado: 'ELIMINADO' });
-    res.json({ ok: true, mensaje: 'Vencimiento eliminado.' });
-  } catch (e) { err(res, req, e); }
+    res.json({ ok: true });
+  } catch (e) { errHandler(res, req, e); }
 });
 
 module.exports = router;

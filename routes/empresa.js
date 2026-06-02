@@ -41,4 +41,32 @@ router.put('/fiscal', verifyToken, requireAdmin, async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
+router.get('/suscripcion', verifyToken, requireAdmin, async (req, res) => {
+  try {
+    const [empDoc, suscDoc] = await Promise.all([
+      empresaRef(req.tenantId).get(),
+      empresaRef(req.tenantId).collection('suscripcion').doc('actual').get(),
+    ]);
+    const emp  = empDoc.exists  ? empDoc.data()  : {};
+    const susc = suscDoc.exists ? suscDoc.data() : {};
+    const ahora = new Date();
+    let estado = 'trial';
+    if (susc.estado) {
+      estado = susc.estado;
+    } else if (susc.fechaProximoCobro) {
+      estado = new Date(susc.fechaProximoCobro) >= ahora ? 'activa' : 'vencida';
+    }
+    res.json({
+      ok: true,
+      plan:             susc.plan || emp.plan || 'prueba',
+      estado,
+      fechaVencimiento: susc.fechaProximoCobro || '',
+      limites: {
+        choferes: susc.choferesIncluidos || emp.limites?.choferes || 2,
+        ...(susc.limites || emp.limites || {}),
+      },
+    });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 module.exports = router;
