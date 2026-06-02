@@ -1,15 +1,14 @@
 const router = require('express').Router();
 const { db } = require('../firebase');
-const auth = require('../middleware/authMiddleware');
-const { esAdmin, nombreUsuario, fechaHoyAR, col } = require('../utils');
+const { verifyToken, requireAdmin } = require('../middleware/auth');
+const { nombreUsuario, fechaHoyAR, col } = require('../utils');
 
-const err = (res, req, e) => {
-  console.error('[ERROR ubicaciones]', req.path, e.message);
+const errHandler = (res, req, e) => {
+  console.error('[UBICACIONES]', req.path, e.message);
   res.status(500).json({ ok: false, mensaje: e.message });
 };
 
-// Registrar ubicación del usuario logueado
-router.post('/', auth, async (req, res) => {
+router.post('/', verifyToken, async (req, res) => {
   try {
     const { lat, lng, precision } = req.body;
     const usuario = nombreUsuario(req.user);
@@ -24,15 +23,13 @@ router.post('/', auth, async (req, res) => {
       timestamp: ts, fecha, hora, actualizadoEn: ahora
     };
 
-    // Actualizar posición actual (por usuario, usando uid para unicidad)
     await col(req.tenantId, 'ubicaciones').doc(req.user.uid || usuario).set(docData);
-    // Historial
     await col(req.tenantId, 'ubicaciones_hist').add({ usuario, lat, lng, timestamp: ts, fecha, hora });
     res.json({ ok: true });
-  } catch (e) { err(res, req, e); }
+  } catch (e) { errHandler(res, req, e); }
 });
 
-// Registrar ubicación nativa (GPS Android, sin auth tradicional pero con uid en body)
+// Public — GPS nativo sin auth
 router.post('/nativa', async (req, res) => {
   try {
     const { chofer, lat, lng, velocidad, tenantId } = req.body;
@@ -40,13 +37,11 @@ router.post('/nativa', async (req, res) => {
     const doc = { chofer, lat, lng, velocidad: velocidad || 0, timestamp: new Date().toISOString() };
     await db.collection('empresas').doc(tenantId).collection('ubicaciones').doc(chofer).set(doc);
     res.json({ ok: true });
-  } catch (e) { err(res, req, e); }
+  } catch (e) { errHandler(res, req, e); }
 });
 
-// Obtener ubicaciones actuales de todos los choferes (admin)
-router.get('/', auth, async (req, res) => {
+router.get('/', verifyToken, requireAdmin, async (req, res) => {
   try {
-    if (!esAdmin(req.user)) return res.status(403).json({ ok: false, mensaje: 'Sin permisos.' });
     const snap = await col(req.tenantId, 'ubicaciones').get();
     const ahora = new Date();
     const ubicaciones = snap.docs.map((d, idx) => {
@@ -59,13 +54,11 @@ router.get('/', auth, async (req, res) => {
       return { usuario: nombre, rol: data.rol, lat: Number(data.lat), lng: Number(data.lng), timestamp: (data.fecha || '') + ' ' + (data.hora || ''), hace, diffMin, colorIdx: idx };
     }).filter(Boolean);
     res.json({ ok: true, ubicaciones });
-  } catch (e) { err(res, req, e); }
+  } catch (e) { errHandler(res, req, e); }
 });
 
-// Historial de ubicaciones de un usuario para hoy
-router.get('/historial/:usuario', auth, async (req, res) => {
+router.get('/historial/:usuario', verifyToken, requireAdmin, async (req, res) => {
   try {
-    if (!esAdmin(req.user)) return res.status(403).json({ ok: false, mensaje: 'Sin permisos.' });
     const hoy = fechaHoyAR();
     const snap = await col(req.tenantId, 'ubicaciones_hist')
       .where('usuario', '==', req.params.usuario)
@@ -77,15 +70,15 @@ router.get('/historial/:usuario', auth, async (req, res) => {
       lat: Number(d.lat), lng: Number(d.lng), hora: d.hora || '', ts: d.timestamp || ''
     }));
     res.json({ ok: true, puntos, usuario: req.params.usuario, fecha: hoy });
-  } catch (e) { err(res, req, e); }
+  } catch (e) { errHandler(res, req, e); }
 });
 
-// PUT legacy (compatibilidad con versión anterior)
-router.put('/:usuario', auth, async (req, res) => {
+// Legacy
+router.put('/:usuario', verifyToken, async (req, res) => {
   try {
     await col(req.tenantId, 'ubicaciones').doc(req.params.usuario).set({ ...req.body, actualizadoEn: new Date() }, { merge: true });
     res.json({ ok: true });
-  } catch (e) { err(res, req, e); }
+  } catch (e) { errHandler(res, req, e); }
 });
 
 module.exports = router;

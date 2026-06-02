@@ -1,21 +1,13 @@
 const router = require('express').Router();
 const { db, admin } = require('../firebase');
-const auth = require('../middleware/authMiddleware');
+const { verifyToken } = require('../middleware/auth');
 const { esSuperadmin, randomUUID } = require('../utils');
 const https = require('https');
 
-const err = (res, req, e) => {
-  console.error('[ERROR superadmin]', req.path, e.message);
+const errHandler = (res, req, e) => {
+  console.error('[SUPERADMIN]', req.path, e.message);
   res.status(500).json({ ok: false, mensaje: e.message });
 };
-
-function assertSuperadmin(req, res) {
-  if (!esSuperadmin(req.user)) {
-    res.status(403).json({ ok: false, mensaje: 'Acceso restringido a superadmin.' });
-    return false;
-  }
-  return true;
-}
 
 function mpFetch(path, params) {
   return new Promise((resolve, reject) => {
@@ -29,8 +21,8 @@ function mpFetch(path, params) {
   });
 }
 
-router.use(auth, (req, res, next) => {
-  if (!assertSuperadmin(req, res)) return;
+router.use(verifyToken, (req, res, next) => {
+  if (!esSuperadmin(req.user)) return res.status(403).json({ ok: false, mensaje: 'Acceso restringido a superadmin.' });
   next();
 });
 
@@ -66,7 +58,7 @@ router.get('/empresas', async (req, res) => {
 
     resultado.sort((a, b) => String(b.fechaRegistro).localeCompare(String(a.fechaRegistro)));
     res.json({ ok: true, empresas: resultado });
-  } catch (e) { err(res, req, e); }
+  } catch (e) { errHandler(res, req, e); }
 });
 
 router.get('/empresas/:id', async (req, res) => {
@@ -86,21 +78,21 @@ router.get('/empresas/:id', async (req, res) => {
       features:    featDoc.exists ? featDoc.data() : {},
       limites:     limDoc.exists  ? limDoc.data()  : {}
     });
-  } catch (e) { err(res, req, e); }
+  } catch (e) { errHandler(res, req, e); }
 });
 
 router.put('/empresas/:id/features', async (req, res) => {
   try {
     await db.collection('empresas').doc(req.params.id).collection('config').doc('features').set({ ...req.body, _updatedAt: new Date().toISOString() });
     res.json({ ok: true });
-  } catch (e) { err(res, req, e); }
+  } catch (e) { errHandler(res, req, e); }
 });
 
 router.put('/empresas/:id/limites', async (req, res) => {
   try {
     await db.collection('empresas').doc(req.params.id).collection('config').doc('limites').set({ ...req.body, _updatedAt: new Date().toISOString() }, { merge: true });
     res.json({ ok: true });
-  } catch (e) { err(res, req, e); }
+  } catch (e) { errHandler(res, req, e); }
 });
 
 router.put('/empresas/:id/suscripcion/extender', async (req, res) => {
@@ -117,7 +109,7 @@ router.put('/empresas/:id/suscripcion/extender', async (req, res) => {
     susc._updatedAt = new Date().toISOString();
     await ref.set(susc);
     res.json({ ok: true, nuevaFecha: susc.fechaProximoCobro });
-  } catch (e) { err(res, req, e); }
+  } catch (e) { errHandler(res, req, e); }
 });
 
 router.put('/empresas/:id/suspender', async (req, res) => {
@@ -129,7 +121,7 @@ router.put('/empresas/:id/suspender', async (req, res) => {
       base.collection('suscripcion').doc('actual').set({ estado: 'suspendida', _updatedAt: new Date().toISOString() }, { merge: true })
     ]);
     res.json({ ok: true });
-  } catch (e) { err(res, req, e); }
+  } catch (e) { errHandler(res, req, e); }
 });
 
 router.put('/empresas/:id/reactivar', async (req, res) => {
@@ -140,14 +132,14 @@ router.put('/empresas/:id/reactivar', async (req, res) => {
       base.collection('suscripcion').doc('actual').set({ estado: 'activa', _updatedAt: new Date().toISOString() }, { merge: true })
     ]);
     res.json({ ok: true });
-  } catch (e) { err(res, req, e); }
+  } catch (e) { errHandler(res, req, e); }
 });
 
 router.delete('/empresas/:id', async (req, res) => {
   try {
     await db.collection('empresas').doc(req.params.id).update({ activo: false, eliminada: true, fechaEliminacion: new Date().toISOString() });
     res.json({ ok: true });
-  } catch (e) { err(res, req, e); }
+  } catch (e) { errHandler(res, req, e); }
 });
 
 // ── USUARIOS DE EMPRESA ───────────────────────────────────────────────────────
@@ -156,7 +148,7 @@ router.get('/empresas/:id/usuarios', async (req, res) => {
   try {
     const snap = await db.collection('empresas').doc(req.params.id).collection('usuarios').get();
     res.json({ ok: true, usuarios: snap.docs.map(d => ({ id: d.id, ...d.data() })) });
-  } catch (e) { err(res, req, e); }
+  } catch (e) { errHandler(res, req, e); }
 });
 
 router.post('/empresas/:id/admin', async (req, res) => {
@@ -171,7 +163,7 @@ router.post('/empresas/:id/admin', async (req, res) => {
       creadoEn: new Date().toISOString()
     });
     res.json({ ok: true, uid: userRecord.uid, mensaje: 'Admin creado.' });
-  } catch (e) { err(res, req, e); }
+  } catch (e) { errHandler(res, req, e); }
 });
 
 // ── MÉTRICAS ──────────────────────────────────────────────────────────────────
@@ -220,7 +212,7 @@ router.get('/metricas', async (req, res) => {
       churnRate: empresas.length > 0 ? Math.round((canceladas / empresas.length) * 100) : 0,
       distribucionPlan: distPlan, distribucionTipo: distTipo, mes: m, anio: y
     });
-  } catch (e) { err(res, req, e); }
+  } catch (e) { errHandler(res, req, e); }
 });
 
 // ── PAGOS MERCADOPAGO ─────────────────────────────────────────────────────────
@@ -244,7 +236,7 @@ router.get('/pagos-mp', async (req, res) => {
     if (tenantId) pagos = pagos.filter(p => p.tenantId === tenantId);
     const totalCobrado = pagos.filter(p => p.estado === 'approved').reduce((acc, p) => acc + p.monto, 0);
     res.json({ ok: true, pagos, totalCobrado });
-  } catch (e) { err(res, req, e); }
+  } catch (e) { errHandler(res, req, e); }
 });
 
 // ── USUARIOS GLOBAL ───────────────────────────────────────────────────────────
@@ -262,7 +254,7 @@ router.get('/usuarios', async (req, res) => {
       );
     }
     res.json({ ok: true, usuarios });
-  } catch (e) { err(res, req, e); }
+  } catch (e) { errHandler(res, req, e); }
 });
 
 // ── LOGS ──────────────────────────────────────────────────────────────────────
@@ -275,7 +267,7 @@ router.get('/empresas/:id/logs', async (req, res) => {
     const snap = await db.collection('empresas').doc(req.params.id).collection('logs').orderBy('fecha', 'desc').limit(100).get();
     const logs = snap.docs.map(d => d.data()).filter(l => !l.fecha || new Date(l.fecha) >= desde);
     res.json({ ok: true, logs });
-  } catch (e) { err(res, req, e); }
+  } catch (e) { errHandler(res, req, e); }
 });
 
 // ── MENSAJES MASIVOS ──────────────────────────────────────────────────────────
@@ -290,7 +282,7 @@ router.post('/mensajes', async (req, res) => {
       creadoEn: new Date().toISOString(), activo: true
     });
     res.json({ ok: true, id });
-  } catch (e) { err(res, req, e); }
+  } catch (e) { errHandler(res, req, e); }
 });
 
 // ── STATS RÁPIDAS ─────────────────────────────────────────────────────────────
@@ -300,7 +292,7 @@ router.get('/stats', async (req, res) => {
     const snap = await db.collection('empresas').get();
     const empresas = snap.docs.length;
     res.json({ ok: true, empresas });
-  } catch (e) { err(res, req, e); }
+  } catch (e) { errHandler(res, req, e); }
 });
 
 module.exports = router;

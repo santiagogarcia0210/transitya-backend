@@ -1,6 +1,6 @@
 const router = require('express').Router();
 const { db } = require('../firebase');
-const auth = require('../middleware/authMiddleware');
+const { verifyToken } = require('../middleware/auth');
 const { normalizarText_, col } = require('../utils');
 const https = require('https');
 
@@ -8,8 +8,8 @@ const CACHE_COL = 'geoCache';
 const CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const NOMINATIM_DELAY_MS = 1150;
 
-const err = (res, req, e) => {
-  console.error('[ERROR geo]', req.path, e.message);
+const errHandler = (res, req, e) => {
+  console.error('[GEO]', req.path, e.message);
   res.status(500).json({ ok: false, mensaje: e.message });
 };
 
@@ -55,7 +55,7 @@ function sleep(ms) {
 
 // ── GEOCODIFICACIÓN DIRECTA ───────────────────────────────────────────────────
 
-router.get('/geocode', auth, async (req, res) => {
+router.get('/geocode', verifyToken, async (req, res) => {
   try {
     const { q, domicilio, localidad } = req.query;
     const query = q || [domicilio, localidad, 'Tucumán', 'Argentina'].filter(Boolean).join(', ');
@@ -83,12 +83,12 @@ router.get('/geocode', auth, async (req, res) => {
 
     await cacheRef.set({ lat, lng, display, query, ts: Date.now() });
     res.json({ ok: true, lat, lng, display, fuente: 'nominatim', resultados: data });
-  } catch (e) { err(res, req, e); }
+  } catch (e) { errHandler(res, req, e); }
 });
 
-// ── GEOCODIFICACIÓN DOMICILIO (compatible con GAS geocodificarDomicilio) ──────
+// ── GEOCODIFICACIÓN DOMICILIO ─────────────────────────────────────────────────
 
-router.post('/geocodificar', auth, async (req, res) => {
+router.post('/geocodificar', verifyToken, async (req, res) => {
   try {
     const { domicilio, localidad } = req.body;
     if (!domicilio || !domicilio.trim()) return res.status(400).json({ ok: false, mensaje: 'Domicilio vacío.' });
@@ -116,12 +116,12 @@ router.post('/geocodificar', auth, async (req, res) => {
 
     await cacheRef.set({ lat, lng, display, key, ts: Date.now() });
     res.json({ ok: true, lat, lng, display, fuente: 'nominatim' });
-  } catch (e) { err(res, req, e); }
+  } catch (e) { errHandler(res, req, e); }
 });
 
 // ── GEOCODIFICACIÓN INVERSA ───────────────────────────────────────────────────
 
-router.get('/reverse', auth, async (req, res) => {
+router.get('/reverse', verifyToken, async (req, res) => {
   try {
     const { lat, lon, lng } = req.query;
     const lonFinal = lon || lng;
@@ -141,12 +141,12 @@ router.get('/reverse', auth, async (req, res) => {
     const result = await nominatimReverseFetch(lat, lonFinal);
     await cacheRef.set({ result, ts: Date.now() });
     res.json({ ok: true, result, fuente: 'nominatim' });
-  } catch (e) { err(res, req, e); }
+  } catch (e) { errHandler(res, req, e); }
 });
 
-// ── RUTA DEL DÍA (compatible con GAS obtenerRutaDia) ─────────────────────────
+// ── RUTA DEL DÍA ─────────────────────────────────────────────────────────────
 
-router.get('/ruta-dia', auth, async (req, res) => {
+router.get('/ruta-dia', verifyToken, async (req, res) => {
   try {
     const { fecha } = req.query;
     const fechaBuscar = fecha || require('../utils').fechaHoyAR();
@@ -204,12 +204,12 @@ router.get('/ruta-dia', auth, async (req, res) => {
       ok: true, fecha: fechaBuscar, dia: DIAS[jsDay], paradas,
       destinos, total: paradas.length, sinCoords: paradas.filter(p => !p.geocodificado).length
     });
-  } catch (e) { err(res, req, e); }
+  } catch (e) { errHandler(res, req, e); }
 });
 
 // ── GEOCODIFICAR RUTA COMPLETA ────────────────────────────────────────────────
 
-router.post('/geocodificar-ruta', auth, async (req, res) => {
+router.post('/geocodificar-ruta', verifyToken, async (req, res) => {
   try {
     const { paradas } = req.body;
     if (!Array.isArray(paradas)) return res.status(400).json({ ok: false, mensaje: 'Se esperan paradas[].' });
@@ -238,19 +238,19 @@ router.post('/geocodificar-ruta', auth, async (req, res) => {
       sinCoords: paradas.filter(p => !p.geocodificado).length,
       mensaje: `${geocodificadas} geocodificadas.${errores.length ? ' No encontradas: ' + errores.join(', ') : ''}`
     });
-  } catch (e) { err(res, req, e); }
+  } catch (e) { errHandler(res, req, e); }
 });
 
 // ── LIMPIAR CACHE ─────────────────────────────────────────────────────────────
 
-router.delete('/cache', auth, async (req, res) => {
+router.delete('/cache', verifyToken, async (req, res) => {
   try {
     const snap = await db.collection(CACHE_COL).get();
     const batch = db.batch();
     snap.docs.forEach(d => batch.delete(d.ref));
     await batch.commit();
     res.json({ ok: true, eliminados: snap.size });
-  } catch (e) { err(res, req, e); }
+  } catch (e) { errHandler(res, req, e); }
 });
 
 module.exports = router;

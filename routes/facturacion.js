@@ -1,57 +1,53 @@
 const router = require('express').Router();
 const { db } = require('../firebase');
-const auth = require('../middleware/authMiddleware');
-const { esAdmin, fechaHoyAR, generarCorrelativo, nombreUsuario, col, randomUUID } = require('../utils');
+const { verifyToken, requireAdmin } = require('../middleware/auth');
+const { normalizarText_, fechaHoyAR, generarCorrelativo, nombreUsuario, col, randomUUID } = require('../utils');
 
-const err = (res, req, e) => {
-  console.error('[ERROR facturacion]', req.path, e.message);
+const errHandler = (res, req, e) => {
+  console.error('[FACTURACION]', req.path, e.message);
   res.status(500).json({ ok: false, mensaje: e.message });
 };
 
 // ── DATOS FISCALES ────────────────────────────────────────────────────────────
 
-router.get('/datos-fiscales', auth, async (req, res) => {
+router.get('/datos-fiscales', verifyToken, async (req, res) => {
   try {
     const doc = await db.collection('empresas').doc(req.tenantId).get();
     const datos = doc.exists ? (doc.data().datosFiscales || {}) : {};
     res.json({ ok: true, datosFiscales: datos });
-  } catch (e) { err(res, req, e); }
+  } catch (e) { errHandler(res, req, e); }
 });
 
-router.put('/datos-fiscales', auth, async (req, res) => {
+router.put('/datos-fiscales', verifyToken, requireAdmin, async (req, res) => {
   try {
-    if (!esAdmin(req.user)) return res.status(403).json({ ok: false, mensaje: 'Sin permisos.' });
     await db.collection('empresas').doc(req.tenantId).update({ datosFiscales: req.body });
     res.json({ ok: true, mensaje: 'Datos fiscales actualizados.' });
-  } catch (e) { err(res, req, e); }
+  } catch (e) { errHandler(res, req, e); }
 });
 
 // ── FACTURAS ARCA/AFIP EMITIDAS ───────────────────────────────────────────────
 
-router.get('/emitidas', auth, async (req, res) => {
+router.get('/emitidas', verifyToken, requireAdmin, async (req, res) => {
   try {
-    if (!esAdmin(req.user)) return res.status(403).json({ ok: false, mensaje: 'Sin permisos.' });
     const snap = await col(req.tenantId, 'facturas_emitidas').get();
     const docs = snap.docs.map(d => ({ id: d.id, ...d.data() }))
       .sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || '')));
     res.json({ ok: true, facturas: docs, headers: docs[0] ? Object.keys(docs[0]).filter(k => !k.startsWith('_')) : [] });
-  } catch (e) { err(res, req, e); }
+  } catch (e) { errHandler(res, req, e); }
 });
 
-router.post('/emitidas', auth, async (req, res) => {
+router.post('/emitidas', verifyToken, requireAdmin, async (req, res) => {
   try {
-    if (!esAdmin(req.user)) return res.status(403).json({ ok: false, mensaje: 'Sin permisos.' });
     const data = req.body;
     const id = data.id || randomUUID();
     const doc = { ...data, id, creadoPor: nombreUsuario(req.user), creadoEn: new Date().toISOString() };
     await col(req.tenantId, 'facturas_emitidas').doc(id).set(doc);
     res.json({ ok: true, mensaje: 'Factura ARCA registrada.', id });
-  } catch (e) { err(res, req, e); }
+  } catch (e) { errHandler(res, req, e); }
 });
 
-router.put('/emitidas/:id/pagar', auth, async (req, res) => {
+router.put('/emitidas/:id/pagar', verifyToken, requireAdmin, async (req, res) => {
   try {
-    if (!esAdmin(req.user)) return res.status(403).json({ ok: false, mensaje: 'Sin permisos.' });
     const ref = col(req.tenantId, 'facturas_emitidas').doc(req.params.id);
     const snap = await ref.get();
     if (!snap.exists) return res.status(404).json({ ok: false, mensaje: 'Factura no encontrada.' });
@@ -66,29 +62,27 @@ router.put('/emitidas/:id/pagar', auth, async (req, res) => {
       } catch (eI) {}
     }
     res.json({ ok: true, mensaje: 'Factura ARCA marcada como pagada.' });
-  } catch (e) { err(res, req, e); }
+  } catch (e) { errHandler(res, req, e); }
 });
 
-// ── FACTURAS ESPECIALES (esp_*) ───────────────────────────────────────────────
+// ── FACTURAS ESPECIALES ───────────────────────────────────────────────────────
 
-router.get('/esp/facturas', auth, async (req, res) => {
+router.get('/esp/facturas', verifyToken, requireAdmin, async (req, res) => {
   try {
-    if (!esAdmin(req.user)) return res.status(403).json({ ok: false, mensaje: 'Sin permisos.' });
-    const filtros = req.query;
+    const { clienteId, estado, porPagina, pagina } = req.query;
     const snap = await col(req.tenantId, 'esp_facturas').get();
     let todas = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-    if (filtros.clienteId) todas = todas.filter(f => f.clienteId === filtros.clienteId);
-    if (filtros.estado)    todas = todas.filter(f => f.estado === filtros.estado);
+    if (clienteId) todas = todas.filter(f => f.clienteId === clienteId);
+    if (estado)    todas = todas.filter(f => f.estado === estado);
     todas.sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || '')));
-    const pp = Number(filtros.porPagina) || 50;
-    const pg = Math.max(1, Number(filtros.pagina) || 1);
+    const pp = Number(porPagina) || 50;
+    const pg = Math.max(1, Number(pagina) || 1);
     res.json({ ok: true, facturas: todas.slice((pg - 1) * pp, pg * pp), total: todas.length, pagina: pg, paginas: Math.max(1, Math.ceil(todas.length / pp)) });
-  } catch (e) { err(res, req, e); }
+  } catch (e) { errHandler(res, req, e); }
 });
 
-router.post('/esp/facturas', auth, async (req, res) => {
+router.post('/esp/facturas', verifyToken, requireAdmin, async (req, res) => {
   try {
-    if (!esAdmin(req.user)) return res.status(403).json({ ok: false, mensaje: 'Sin permisos.' });
     const data = req.body;
     const esNueva = !data.id;
     const id = data.id || randomUUID();
@@ -142,12 +136,11 @@ router.post('/esp/facturas', auth, async (req, res) => {
     }
 
     res.json({ ok: true, mensaje: 'Factura especial guardada.', id, nroFactura: nroFormateado });
-  } catch (e) { err(res, req, e); }
+  } catch (e) { errHandler(res, req, e); }
 });
 
-router.put('/esp/facturas/:id/pagar', auth, async (req, res) => {
+router.put('/esp/facturas/:id/pagar', verifyToken, requireAdmin, async (req, res) => {
   try {
-    if (!esAdmin(req.user)) return res.status(403).json({ ok: false, mensaje: 'Sin permisos.' });
     const ref = col(req.tenantId, 'esp_facturas').doc(req.params.id);
     const snap = await ref.get();
     if (!snap.exists) return res.status(404).json({ ok: false, mensaje: 'Factura no encontrada.' });
@@ -163,23 +156,21 @@ router.put('/esp/facturas/:id/pagar', auth, async (req, res) => {
       } catch (eI) {}
     }
     res.json({ ok: true, mensaje: 'Factura especial marcada como pagada.' });
-  } catch (e) { err(res, req, e); }
+  } catch (e) { errHandler(res, req, e); }
 });
 
-router.get('/esp/ingresos', auth, async (req, res) => {
+router.get('/esp/ingresos', verifyToken, requireAdmin, async (req, res) => {
   try {
-    if (!esAdmin(req.user)) return res.status(403).json({ ok: false, mensaje: 'Sin permisos.' });
     const snap = await col(req.tenantId, 'ingresos').get();
     const todos = snap.docs.map(d => ({ id: d.id, ...d.data() }))
       .filter(i => i.modulo === 'especial' || i.modulo === 'arca')
       .sort((a, b) => String(b.creadoEn || '').localeCompare(String(a.creadoEn || '')));
     res.json({ ok: true, ingresos: todos });
-  } catch (e) { err(res, req, e); }
+  } catch (e) { errHandler(res, req, e); }
 });
 
-router.put('/esp/ingresos/:id/pagar', auth, async (req, res) => {
+router.put('/esp/ingresos/:id/pagar', verifyToken, requireAdmin, async (req, res) => {
   try {
-    if (!esAdmin(req.user)) return res.status(403).json({ ok: false, mensaje: 'Sin permisos.' });
     const ref = col(req.tenantId, 'ingresos').doc(req.params.id);
     const snap = await ref.get();
     if (!snap.exists) return res.status(404).json({ ok: false, mensaje: 'Ingreso no encontrado.' });
@@ -195,108 +186,194 @@ router.put('/esp/ingresos/:id/pagar', auth, async (req, res) => {
       } catch (eF) {}
     }
     res.json({ ok: true, mensaje: 'Ingreso marcado como pagado.' });
-  } catch (e) { err(res, req, e); }
+  } catch (e) { errHandler(res, req, e); }
 });
 
 // ── PUNTOS DE VENTA ───────────────────────────────────────────────────────────
 
-router.get('/puntos-venta', auth, async (req, res) => {
+router.get('/puntos-venta', verifyToken, async (req, res) => {
   try {
     const snap = await col(req.tenantId, 'puntosVenta').get();
     res.json({ ok: true, puntosVenta: snap.docs.map(d => ({ id: d.id, ...d.data() })) });
-  } catch (e) { err(res, req, e); }
+  } catch (e) { errHandler(res, req, e); }
 });
 
-router.post('/puntos-venta', auth, async (req, res) => {
+router.post('/puntos-venta', verifyToken, requireAdmin, async (req, res) => {
   try {
-    if (!esAdmin(req.user)) return res.status(403).json({ ok: false, mensaje: 'Sin permisos.' });
     const ref = await col(req.tenantId, 'puntosVenta').add({ ...req.body, creadoEn: new Date() });
     res.json({ ok: true, id: ref.id });
-  } catch (e) { err(res, req, e); }
+  } catch (e) { errHandler(res, req, e); }
 });
 
-router.put('/puntos-venta/:id', auth, async (req, res) => {
+router.put('/puntos-venta/:id', verifyToken, requireAdmin, async (req, res) => {
   try {
-    if (!esAdmin(req.user)) return res.status(403).json({ ok: false, mensaje: 'Sin permisos.' });
     await col(req.tenantId, 'puntosVenta').doc(req.params.id).update(req.body);
     res.json({ ok: true });
-  } catch (e) { err(res, req, e); }
+  } catch (e) { errHandler(res, req, e); }
 });
 
-router.delete('/puntos-venta/:id', auth, async (req, res) => {
+router.delete('/puntos-venta/:id', verifyToken, requireAdmin, async (req, res) => {
   try {
-    if (!esAdmin(req.user)) return res.status(403).json({ ok: false, mensaje: 'Sin permisos.' });
     await col(req.tenantId, 'puntosVenta').doc(req.params.id).delete();
     res.json({ ok: true });
-  } catch (e) { err(res, req, e); }
+  } catch (e) { errHandler(res, req, e); }
 });
 
-// ── DATOS MÓDULOS ESPECIALES (presentación, altas, cambio transporte) ─────────
+// ── DATOS MÓDULOS ESPECIALES ──────────────────────────────────────────────────
 
-router.get('/datos/facturacion', auth, async (req, res) => {
+router.get('/datos/facturacion', verifyToken, requireAdmin, async (req, res) => {
   try {
-    if (!esAdmin(req.user)) return res.status(403).json({ ok: false, mensaje: 'Sin permisos.' });
     const snap = await col(req.tenantId, 'facturacion').get();
     const docs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
     res.json({ ok: true, headers: docs[0] ? Object.keys(docs[0]).filter(k => !k.startsWith('_')) : [], valores: docs });
-  } catch (e) { err(res, req, e); }
+  } catch (e) { errHandler(res, req, e); }
 });
 
-router.get('/datos/presentacion', auth, async (req, res) => {
+router.get('/datos/presentacion', verifyToken, requireAdmin, async (req, res) => {
   try {
-    if (!esAdmin(req.user)) return res.status(403).json({ ok: false, mensaje: 'Sin permisos.' });
     const snap = await col(req.tenantId, 'presentacion_docs').get();
     const docs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
     res.json({ ok: true, registros: docs, headers: docs[0] ? Object.keys(docs[0]).filter(k => !k.startsWith('_')) : [] });
-  } catch (e) { err(res, req, e); }
+  } catch (e) { errHandler(res, req, e); }
 });
 
-router.post('/datos/presentacion', auth, async (req, res) => {
+router.post('/datos/presentacion', verifyToken, requireAdmin, async (req, res) => {
   try {
-    if (!esAdmin(req.user)) return res.status(403).json({ ok: false, mensaje: 'Sin permisos.' });
     const id = randomUUID();
     const doc = { ...req.body, id, creadoPor: nombreUsuario(req.user), creadoEn: new Date().toISOString() };
     await col(req.tenantId, 'presentacion_docs').doc(id).set(doc);
     res.json({ ok: true, id, mensaje: 'Registro guardado.' });
-  } catch (e) { err(res, req, e); }
+  } catch (e) { errHandler(res, req, e); }
 });
 
-router.get('/datos/altas', auth, async (req, res) => {
+router.get('/datos/altas', verifyToken, requireAdmin, async (req, res) => {
   try {
-    if (!esAdmin(req.user)) return res.status(403).json({ ok: false, mensaje: 'Sin permisos.' });
     const snap = await col(req.tenantId, 'altas_pres').get();
     const docs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
     res.json({ ok: true, registros: docs, headers: docs[0] ? Object.keys(docs[0]).filter(k => !k.startsWith('_')) : [] });
-  } catch (e) { err(res, req, e); }
+  } catch (e) { errHandler(res, req, e); }
 });
 
-router.post('/datos/altas', auth, async (req, res) => {
+router.post('/datos/altas', verifyToken, requireAdmin, async (req, res) => {
   try {
-    if (!esAdmin(req.user)) return res.status(403).json({ ok: false, mensaje: 'Sin permisos.' });
     const id = randomUUID();
     const doc = { ...req.body, id, creadoPor: nombreUsuario(req.user), creadoEn: new Date().toISOString() };
     await col(req.tenantId, 'altas_pres').doc(id).set(doc);
     res.json({ ok: true, id, mensaje: 'Alta registrada.' });
-  } catch (e) { err(res, req, e); }
+  } catch (e) { errHandler(res, req, e); }
 });
 
-router.get('/datos/cambio-transporte', auth, async (req, res) => {
+router.get('/datos/cambio-transporte', verifyToken, requireAdmin, async (req, res) => {
   try {
-    if (!esAdmin(req.user)) return res.status(403).json({ ok: false, mensaje: 'Sin permisos.' });
     const snap = await col(req.tenantId, 'cambio_transporte').get();
     const docs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
     res.json({ ok: true, registros: docs, headers: docs[0] ? Object.keys(docs[0]).filter(k => !k.startsWith('_')) : [] });
-  } catch (e) { err(res, req, e); }
+  } catch (e) { errHandler(res, req, e); }
 });
 
-router.post('/datos/cambio-transporte', auth, async (req, res) => {
+router.post('/datos/cambio-transporte', verifyToken, requireAdmin, async (req, res) => {
   try {
-    if (!esAdmin(req.user)) return res.status(403).json({ ok: false, mensaje: 'Sin permisos.' });
     const id = randomUUID();
     const doc = { ...req.body, id, creadoPor: nombreUsuario(req.user), creadoEn: new Date().toISOString() };
     await col(req.tenantId, 'cambio_transporte').doc(id).set(doc);
     res.json({ ok: true, id, mensaje: 'Nota guardada.' });
-  } catch (e) { err(res, req, e); }
+  } catch (e) { errHandler(res, req, e); }
+});
+
+// ── ARCA (AFIP) ───────────────────────────────────────────────────────────────
+
+router.get('/arca', verifyToken, requireAdmin, async (req, res) => {
+  try {
+    const { tipo, desde, hasta, cliente } = req.query;
+    const snap = await col(req.tenantId, 'arca_facturas').get();
+    let docs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+
+    if (tipo)    docs = docs.filter(f => String(f.tipoComprobante || '').toUpperCase() === tipo.toUpperCase());
+    if (cliente) docs = docs.filter(f => normalizarText_(f.cliente || '').includes(normalizarText_(cliente)));
+    if (desde || hasta) {
+      const dDesde = desde ? new Date(desde) : null;
+      const dHasta = hasta ? new Date(hasta) : null;
+      docs = docs.filter(f => {
+        const p = String(f.fecha || '').split('/');
+        if (p.length < 3) return true;
+        const y  = Number(p[2].length === 2 ? '20' + p[2] : p[2]);
+        const fd = new Date(y, Number(p[1]) - 1, Number(p[0]));
+        if (dDesde && fd < dDesde) return false;
+        if (dHasta && fd > dHasta) return false;
+        return true;
+      });
+    }
+    docs.sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || '')));
+    res.json({ ok: true, facturas: docs });
+  } catch (e) { errHandler(res, req, e); }
+});
+
+router.post('/arca', verifyToken, requireAdmin, async (req, res) => {
+  try {
+    const { tipoComprobante, puntoVenta, numero, cae, fecha,
+            cliente, cuitCliente, concepto, monto } = req.body;
+    if (!tipoComprobante || !cliente) return res.status(400).json({ ok: false, mensaje: 'tipoComprobante y cliente son requeridos.' });
+    if (!Number(monto) || Number(monto) <= 0) return res.status(400).json({ ok: false, mensaje: 'monto debe ser mayor a 0.' });
+
+    const id        = randomUUID();
+    const ingresoId = randomUUID();
+    const fechaDoc  = fecha || fechaHoyAR();
+
+    await col(req.tenantId, 'arca_facturas').doc(id).set({
+      id, tipoComprobante, puntoVenta: Number(puntoVenta) || 1,
+      numero: String(numero || ''), cae: String(cae || ''),
+      fecha: fechaDoc, cliente, cuitCliente: String(cuitCliente || ''),
+      concepto: String(concepto || ''), monto: Number(monto),
+      estado: 'emitida', ingresoId,
+      creadoPor: nombreUsuario(req.user), creadoEn: new Date().toISOString(),
+    });
+
+    await col(req.tenantId, 'ingresos').doc(ingresoId).set({
+      id: ingresoId, facturaId: id, modulo: 'arca',
+      cliente, cuit: String(cuitCliente || ''), monto: Number(monto),
+      estado: 'PRESENTADO', fecha: fechaDoc, concepto: String(concepto || ''),
+      tipo: 'FACTURA', numero: String(numero || ''),
+      fechaPago: '', creadoEn: new Date().toISOString(),
+    });
+
+    res.json({ ok: true, id, ingresoId });
+  } catch (e) { errHandler(res, req, e); }
+});
+
+router.patch('/arca/:id/pagar', verifyToken, requireAdmin, async (req, res) => {
+  try {
+    const ref  = col(req.tenantId, 'arca_facturas').doc(req.params.id);
+    const snap = await ref.get();
+    if (!snap.exists) return res.status(404).json({ ok: false, mensaje: 'Factura no encontrada.' });
+    const doc     = snap.data();
+    const fechaHoy = fechaHoyAR();
+    await ref.update({ estado: 'cobrada', fechaPago: fechaHoy });
+    if (doc.ingresoId) {
+      try {
+        const ingRef = col(req.tenantId, 'ingresos').doc(doc.ingresoId);
+        if ((await ingRef.get()).exists) await ingRef.update({ ESTADO: 'PAGADO', estado: 'PAGADO', fechaPago: fechaHoy });
+      } catch (eI) {}
+    }
+    res.json({ ok: true });
+  } catch (e) { errHandler(res, req, e); }
+});
+
+router.put('/arca/:id', verifyToken, requireAdmin, async (req, res) => {
+  try {
+    const ref = col(req.tenantId, 'arca_facturas').doc(req.params.id);
+    if (!(await ref.get()).exists) return res.status(404).json({ ok: false, mensaje: 'Factura no encontrada.' });
+    await ref.update({ ...req.body, actualizadoEn: new Date().toISOString() });
+    res.json({ ok: true });
+  } catch (e) { errHandler(res, req, e); }
+});
+
+router.delete('/arca/:id', verifyToken, requireAdmin, async (req, res) => {
+  try {
+    const ref = col(req.tenantId, 'arca_facturas').doc(req.params.id);
+    if (!(await ref.get()).exists) return res.status(404).json({ ok: false, mensaje: 'Factura no encontrada.' });
+    await ref.update({ estado: 'anulada', anuladoEn: new Date().toISOString() });
+    res.json({ ok: true });
+  } catch (e) { errHandler(res, req, e); }
 });
 
 module.exports = router;
