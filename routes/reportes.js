@@ -1,6 +1,7 @@
 const router = require('express').Router();
 const { verifyToken, requireAdmin, requireModulo } = require('../middleware/auth');
 const { normalizarText_, parseMonto_, fechaHoyAR, esMesDMY, col, MESES, randomUUID } = require('../utils');
+const { subirFoto } = require('../helpers/storage');
 
 const errHandler = (res, req, e) => {
   console.error('[REPORTES]', req.path, e.message);
@@ -105,13 +106,14 @@ router.get('/', verifyToken, requireModulo('reportes'), async (req, res) => {
 router.post('/', verifyToken, requireModulo('reportes'), async (req, res) => {
   try {
     const data = { ...req.body };
-    // Strip base64 photo fields — Drive upload to be implemented separately
-    delete data.fotoIniBase64;
-    delete data.fotoFinBase64;
-    delete data.FOTO_INI_B64;
-    delete data.FOTO_FIN_B64;
-    delete data._sessionToken;
-    delete data.sessionToken;
+
+    const fotoIni = data.fotoIniBase64 || data.FOTO_INI_B64;
+    const fotoFin = data.fotoFinBase64 || data.FOTO_FIN_B64;
+    const mime    = data.mimeTypeFotos || 'image/jpeg';
+    delete data.fotoIniBase64; delete data.FOTO_INI_B64;
+    delete data.fotoFinBase64; delete data.FOTO_FIN_B64;
+    delete data.mimeTypeFotos;
+    delete data._sessionToken; delete data.sessionToken;
 
     const kmI = Number(data['KM INICIAL'] || data.kmInicial || 0);
     const kmF = Number(data['KM FINAL']   || data.kmFinal   || 0);
@@ -121,6 +123,19 @@ router.post('/', verifyToken, requireModulo('reportes'), async (req, res) => {
 
     const id = String(data.ID || data.id || '').trim() || randomUUID();
     data.ID = id;
+
+    if (fotoIni) {
+      data.fotoIniUrl = await subirFoto(
+        fotoIni, mime,
+        `reportes/${req.tenantId}/${id}_ini.jpg`
+      );
+    }
+    if (fotoFin) {
+      data.fotoFinUrl = await subirFoto(
+        fotoFin, mime,
+        `reportes/${req.tenantId}/${id}_fin.jpg`
+      );
+    }
 
     await col(req.tenantId, 'reportes').doc(id).set({ ...data, creadoEn: new Date() });
     res.json({ ok: true, mensaje: 'REPORTE GUARDADO', kmRecorridos: data['KM RECORRIDOS'], id });

@@ -14,7 +14,8 @@ try {
   if (!admin.apps.length) {
     admin.initializeApp({
       credential: admin.credential.cert(serviceAccount),
-      projectId: 'gestion-transporte-ef756'
+      projectId: 'gestion-transporte-ef756',
+      storageBucket: process.env.FIREBASE_STORAGE_BUCKET || 'gestion-transporte-ef756.appspot.com',
     });
     console.log('[FIREBASE] Initialized successfully');
   }
