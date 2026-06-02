@@ -12,6 +12,16 @@ router.get('/tipo', verifyToken, async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
+router.put('/tipo', verifyToken, requireAdmin, async (req, res) => {
+  try {
+    const { tipo } = req.body;
+    const tipos = ['transporte_escolar', 'paqueteria', 'traslado'];
+    if (!tipos.includes(tipo)) return res.status(400).json({ ok: false, error: `Tipo inválido. Valores permitidos: ${tipos.join(', ')}` });
+    await empresaRef(req.tenantId).set({ tipo }, { merge: true });
+    res.json({ ok: true, tipo });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 router.get('/config', verifyToken, async (req, res) => {
   try {
     const doc = await empresaRef(req.tenantId).get();
