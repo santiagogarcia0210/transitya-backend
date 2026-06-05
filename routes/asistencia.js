@@ -1,7 +1,8 @@
-const router = require('express').Router();
-const { db }  = require('../firebase');
-const auth    = require('../middleware/authMiddleware');
-const { col } = require('../utils');
+const router   = require('express').Router();
+const { db }   = require('../firebase');
+const auth     = require('../middleware/authMiddleware');
+const { col }  = require('../utils');
+const Anthropic = require('@anthropic-ai/sdk');
 
 const err = (res, req, e) => {
   console.error('[ERROR asistencia]', req.path, e.message);
@@ -111,6 +112,84 @@ router.delete('/diaria/:choferId', auth, async (req, res) => {
     await col(req.tenantId, 'ASISTENCIA').doc(`${fecha}_${choferId}`).delete();
     res.json({ ok: true, mensaje: 'Asignación eliminada.' });
   } catch (e) { err(res, req, e); }
+});
+
+// ── Optimizar orden con IA — idéntico al GAS asist_armarRecorridoConIA ────────
+// POST /api/asistencia/optimizar
+// Body: { choferId, choferNombre, beneficiarios: [{ id, nombre, domicilio, horarioTurno }] }
+// Returns: { ok, fuente:'ia'|'fallback', paradas: [...] }
+router.post('/optimizar', auth, async (req, res) => {
+  const { choferId, choferNombre, beneficiarios } = req.body;
+
+  if (!beneficiarios || !beneficiarios.length) {
+    return res.status(400).json({ ok: false, mensaje: 'No hay beneficiarios para ordenar.' });
+  }
+
+  // Fallback: ordenar por horarioTurno (sin IA)
+  const fallback = (razon) => {
+    const paradas = [...beneficiarios].sort((a, b) => {
+      const hA = a.horarioTurno || '99:99';
+      const hB = b.horarioTurno || '99:99';
+      return hA < hB ? -1 : hA > hB ? 1 : 0;
+    }).map((b, i) => ({
+      beneficiarioId: b.id,
+      nombre:         b.nombre        || '',
+      domicilio:      b.domicilio     || '',
+      horarioTurno:   b.horarioTurno  || '',
+      ordenVisita:    i + 1,
+    }));
+    return res.json({ ok: true, fuente: 'fallback', razonFallback: razon, paradas });
+  };
+
+  try {
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) return fallback('ANTHROPIC_API_KEY no configurada.');
+
+    const paradasTexto = beneficiarios.map((b, i) =>
+      `${i + 1}. ID: ${b.id} | Nombre: ${b.nombre || ''} | Domicilio: ${b.domicilio || 'Sin domicilio'} | Turno médico: ${b.horarioTurno || 'Sin horario'}`
+    ).join('\n');
+
+    const prompt =
+      `Sos un optimizador de recorridos para transporte de pacientes en Tucumán, Argentina.\n\n` +
+      `El chofer "${choferNombre || choferId}" tiene que buscar estos pacientes:\n` +
+      paradasTexto + `\n\n` +
+      `INSTRUCCIONES:\n` +
+      `1. Ordená las paradas para minimizar la distancia total del recorrido, considerando que domicilios cercanos entre sí deben visitarse juntos.\n` +
+      `2. Respetá que cada paciente llegue ANTES de su horario de turno médico. Los de turno más temprano tienen prioridad.\n` +
+      `3. Si dos pacientes tienen el mismo horario o sin horario, agrupalos por zona geográfica.\n\n` +
+      `Respondé ÚNICAMENTE con un JSON válido, sin texto adicional:\n` +
+      `{\n  "paradas": [\n    {\n      "beneficiarioId": "... (el ID exacto de la lista)",\n      "nombre": "...",\n      "domicilio": "...",\n      "horarioTurno": "...",\n      "ordenVisita": 1\n    }\n  ]\n}`;
+
+    const anthropic = new Anthropic({ apiKey });
+    const response  = await anthropic.messages.create({
+      model:      'claude-haiku-4-5-20251001',
+      max_tokens: 2048,
+      messages:   [{ role: 'user', content: prompt }],
+    });
+
+    const rawText = (response.content[0]?.text || '').trim()
+      .replace(/^```json\s*/i, '').replace(/^```\s*/, '').replace(/\s*```$/, '').trim();
+    const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) return fallback('La IA no devolvió JSON válido.');
+
+    const resultado = JSON.parse(jsonMatch[0]);
+    const paradasIA = resultado.paradas || [];
+
+    // Validar que la IA no perdió ni inventó IDs
+    const idsOrig = beneficiarios.map(b => b.id);
+    const idsIA   = paradasIA.map(p => p.beneficiarioId);
+    if (!idsOrig.every(id => idsIA.includes(id)) || paradasIA.length !== beneficiarios.length) {
+      return fallback('Lista de IA incompleta o inválida.');
+    }
+
+    // Reasignar ordenVisita secuencial
+    paradasIA.forEach((p, i) => { p.ordenVisita = i + 1; });
+    res.json({ ok: true, fuente: 'ia', paradas: paradasIA });
+
+  } catch (e) {
+    console.error('[ASISTENCIA optimizar]', e.message);
+    fallback(e.message);
+  }
 });
 
 module.exports = router;
