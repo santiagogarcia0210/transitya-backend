@@ -11,8 +11,16 @@ const errHandler = (res, req, e) => {
 router.get('/', verifyToken, async (req, res) => {
   try {
     const { termino } = req.query;
-    const snap = await col(req.tenantId, 'registro').get();
-    let items = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    // Check both 'registro' and 'BENEFICIARIOS' (migration may have used uppercase)
+    const [snapReg, snapBen] = await Promise.all([
+      col(req.tenantId, 'registro').get(),
+      col(req.tenantId, 'BENEFICIARIOS').get().catch(() => null),
+    ]);
+    const fromReg = snapReg.docs.map(d => ({ id: d.id, ...d.data() }));
+    const fromBen = snapBen ? snapBen.docs.map(d => ({ id: d.id, ...d.data() })) : [];
+    // Deduplicate by Firestore id
+    const seenIds = new Set(fromReg.map(d => d.id));
+    let items = [...fromReg, ...fromBen.filter(d => !seenIds.has(d.id))];
     if (termino) {
       const q = normalizarText_(termino);
       items = items.filter(doc => normalizarText_(Object.values(doc).join(' ')).includes(q));
