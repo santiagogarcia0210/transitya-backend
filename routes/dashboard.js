@@ -2,6 +2,9 @@ const router = require('express').Router();
 const { verifyToken, requireAdmin } = require('../middleware/auth');
 const { col, parseMonto_, esMesDMY, fechaHoyAR, normalizarText_ } = require('../utils');
 
+const MESES_ES = ['Enero','Febrero','Marzo','Abril','Mayo','Junio',
+                  'Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+
 router.get('/resumen', verifyToken, requireAdmin, async (req, res) => {
   try {
     const { tenantId } = req;
@@ -17,6 +20,8 @@ router.get('/resumen', verifyToken, requireAdmin, async (req, res) => {
       snapReportes,
       snapBajas,
       snapUsuarios,
+      snapUbicaciones,
+      snapEmpresa,
     ] = await Promise.all([
       col(tenantId, 'registro').get(),
       col(tenantId, 'egresos').get(),
@@ -24,16 +29,26 @@ router.get('/resumen', verifyToken, requireAdmin, async (req, res) => {
       col(tenantId, 'reportes').get(),
       col(tenantId, 'bajas').get(),
       col(tenantId, 'usuarios').get(),
+      col(tenantId, 'ubicaciones').get(),
+      require('../firebase').db.collection('empresas').doc(tenantId).get(),
     ]);
 
+    // ── Empresa ──────────────────────────────────────────────────────
+    const empData       = snapEmpresa.exists ? snapEmpresa.data() : {};
+    const empresaNombre = empData.nombre || '';
+    const empresaLogo   = empData.logo   || empData.logoUrl || empData.logoCircular || '';
+
+    // ── Beneficiarios activos ─────────────────────────────────────────
     const beneficiariosActivos = snapRegistro.size;
 
+    // ── Bajas del mes ─────────────────────────────────────────────────
     let bajasMes = 0;
     snapBajas.forEach(d => {
       const fecha = d.data()['FECHA DE BAJA'] || d.data().fechaDeBaja || '';
       if (esMesDMY(fecha, mes, anio)) bajasMes++;
     });
 
+    // ── Egresos ───────────────────────────────────────────────────────
     let egresosMesCount = 0, egresosMesTotal = 0;
     snapEgresos.forEach(d => {
       const doc = d.data();
@@ -43,6 +58,7 @@ router.get('/resumen', verifyToken, requireAdmin, async (req, res) => {
       egresosMesTotal += parseMonto_(doc.monto || doc.MONTO || 0);
     });
 
+    // ── Ingresos ──────────────────────────────────────────────────────
     let ingresosMesCount = 0, ingresosMesTotal = 0;
     let totalPagadoMes = 0, totalPresentadoMes = 0;
     snapIngresos.forEach(d => {
@@ -57,16 +73,17 @@ router.get('/resumen', verifyToken, requireAdmin, async (req, res) => {
       if (estado === 'PRESENTADO') totalPresentadoMes += monto;
     });
 
+    // ── KM / Combustible ──────────────────────────────────────────────
     let kmMes = 0, combustibleMes = 0;
     snapReportes.forEach(d => {
       const doc = d.data();
       const fecha = doc.fecha || doc.FECHA || '';
       if (!esMesDMY(fecha, mes, anio)) return;
-      kmMes         += Number(doc['KM RECORRIDOS'] || doc.kmRecorridos || 0);
+      kmMes          += Number(doc['KM RECORRIDOS'] || doc.kmRecorridos || 0);
       combustibleMes += parseMonto_(doc['COMBUSTIBLE ($)'] || doc.combustiblePesos || 0);
     });
 
-    // Choferes activos con flag reporteHoy
+    // ── Choferes activos con reporteHoy, vehiculo, hace (GPS) ────────
     const reportesHoyChoferes = new Set();
     snapReportes.forEach(d => {
       const doc = d.data();
@@ -75,28 +92,57 @@ router.get('/resumen', verifyToken, requireAdmin, async (req, res) => {
       }
     });
 
+    // Índice de ubicaciones por nombre normalizado
+    const ahora = Date.now();
+    const ubicMap = {};
+    snapUbicaciones.forEach(d => {
+      const data = d.data();
+      const nombreUbic = data.nombre || data.usuario || d.id || '';
+      const ts     = data.timestamp ? new Date(data.timestamp).getTime() : null;
+      const diffMin = ts ? Math.round((ahora - ts) / 60000) : null;
+      const hace = diffMin === null ? null
+        : diffMin < 1  ? 'Hace menos de 1 min'
+        : diffMin < 60 ? `Hace ${diffMin} min`
+        : `Hace ${Math.round(diffMin / 60)} h`;
+      ubicMap[normalizarText_(nombreUbic)] = { hace, diffMin, lat: data.lat, lng: data.lng };
+    });
+
     const estadoChoferes = [];
     snapUsuarios.forEach(d => {
       const doc = d.data();
       const rol = String(doc.rol || doc.ROL || '').toLowerCase();
       if (rol !== 'chofer') return;
       if (doc.activo === false) return;
-      const nombre = doc.nombre || doc.NOMBRE || doc.email || '';
+      const nombre   = doc.nombre || doc.NOMBRE || doc.email || '';
+      const vehiculo = doc.vehiculo || doc.VEHICULO || doc.patente || doc.PATENTE || '';
+      const ubicKey  = normalizarText_(nombre);
+      const ubic     = ubicMap[ubicKey] || {};
       estadoChoferes.push({
-        uid: d.id,
+        uid:        d.id,
         nombre,
-        reporteHoy: reportesHoyChoferes.has(normalizarText_(nombre)),
+        vehiculo,
+        reporteHoy: reportesHoyChoferes.has(ubicKey),
+        hace:       ubic.hace  || null,
+        lat:        ubic.lat   || null,
+        lng:        ubic.lng   || null,
       });
     });
 
+    // ── Respuesta con estructura PLANA que el frontend espera ─────────
     res.json({
       ok: true,
       mes,
       anio,
+      mesNombre:          MESES_ES[mes - 1],
+      empresaNombre,
+      empresaLogo,
       beneficiariosActivos,
       bajasMes,
-      egresosMes:         { count: egresosMesCount,   total: egresosMesTotal },
-      ingresosMes:        { count: ingresosMesCount,  total: ingresosMesTotal },
+      // Plano (no anidado) — lo que el frontend espera
+      egresosMes:         egresosMesCount,
+      totalEgresosMes:    egresosMesTotal,
+      ingresosMes:        ingresosMesCount,
+      totalIngresosMes:   ingresosMesTotal,
       totalPagadoMes,
       totalPresentadoMes,
       kmMes,
