@@ -42,6 +42,65 @@ router.get('/salud', verifyToken, requireAdmin, async (req, res) => {
   } catch (e) { errHandler(res, req, e); }
 });
 
+// ── ALERTAS CONFIG ────────────────────────────────────────────────────────────
+
+router.get('/alertas', verifyToken, requireAdmin, async (req, res) => {
+  try {
+    const doc = await db.collection('empresas').doc(req.tenantId).get();
+    const alertas = doc.exists ? (doc.data().alertas || {}) : {};
+    res.json({ ok: true, alertas });
+  } catch (e) { errHandler(res, req, e); }
+});
+
+router.post('/alertas', verifyToken, requireAdmin, async (req, res) => {
+  try {
+    const { montoMaxEgreso, pctAusenciaMax, email, activo } = req.body;
+    await db.collection('empresas').doc(req.tenantId).set(
+      { alertas: { montoMaxEgreso, pctAusenciaMax, email, activo, actualizadoEn: new Date().toISOString() } },
+      { merge: true }
+    );
+    res.json({ ok: true, mensaje: 'Configuración de alertas guardada' });
+  } catch (e) { errHandler(res, req, e); }
+});
+
+// ── TRIGGERS (stubs — activar/desactivar desde el panel) ──────────────────────
+
+router.post('/trigger-cierre', verifyToken, requireAdmin, async (req, res) => {
+  try {
+    await db.collection('empresas').doc(req.tenantId).set(
+      { triggers: { cierreDia: { activo: true, actualizadoEn: new Date().toISOString() } } },
+      { merge: true }
+    );
+    res.json({ ok: true, mensaje: 'Trigger de cierre diario activado ✓' });
+  } catch (e) { errHandler(res, req, e); }
+});
+
+router.get('/trigger-cierre', verifyToken, requireAdmin, async (req, res) => {
+  try {
+    const doc = await db.collection('empresas').doc(req.tenantId).get();
+    const trigger = doc.exists ? (doc.data().triggers?.cierreDia || {}) : {};
+    res.json({ ok: true, activo: !!trigger.activo, actualizadoEn: trigger.actualizadoEn || null });
+  } catch (e) { errHandler(res, req, e); }
+});
+
+router.post('/trigger-renovacion', verifyToken, requireAdmin, async (req, res) => {
+  try {
+    await db.collection('empresas').doc(req.tenantId).set(
+      { triggers: { renovacionMes: { activo: true, actualizadoEn: new Date().toISOString() } } },
+      { merge: true }
+    );
+    res.json({ ok: true, mensaje: 'Trigger de renovación mensual activado ✓' });
+  } catch (e) { errHandler(res, req, e); }
+});
+
+router.post('/whatsapp-ahora', verifyToken, requireAdmin, async (req, res) => {
+  res.json({ ok: false, mensaje: 'Configurar CALLMEBOT_PHONE y CALLMEBOT_APIKEY en el servidor para activar WhatsApp' });
+});
+
+router.post('/probar-whatsapp', verifyToken, requireAdmin, async (req, res) => {
+  res.json({ ok: false, mensaje: 'Configurar CALLMEBOT_PHONE y CALLMEBOT_APIKEY en el servidor para probar WhatsApp' });
+});
+
 // ── BACKUP ────────────────────────────────────────────────────────────────────
 
 router.post('/backup', verifyToken, requireAdmin, async (req, res) => {
