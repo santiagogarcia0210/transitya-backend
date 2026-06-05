@@ -5,14 +5,22 @@ const verifyToken = async (req, res, next) => {
   if (!token) return res.status(401).json({ ok: false, mensaje: 'Sin token' });
   try {
     const decoded = await auth.verifyIdToken(token);
-    req.user = {
-      uid:         decoded.uid,
-      email:       decoded.email,
-      tenantId:    decoded.tenantId,
-      rol:         decoded.rol,
-      tipoEmpresa: decoded.tipoEmpresa,
-    };
-    req.tenantId = decoded.tenantId;
+    let tenantId    = decoded.tenantId;
+    let rol         = decoded.rol;
+    let tipoEmpresa = decoded.tipoEmpresa;
+
+    // Fallback: stale token or manually-created account may lack custom claims in JWT.
+    // Re-fetch from Firebase Auth to get the persisted claims.
+    if (!tenantId) {
+      const userRecord = await auth.getUser(decoded.uid);
+      const claims = userRecord.customClaims || {};
+      tenantId    = claims.tenantId;
+      rol         = rol         || claims.rol;
+      tipoEmpresa = tipoEmpresa || claims.tipoEmpresa;
+    }
+
+    req.user = { uid: decoded.uid, email: decoded.email, tenantId, rol, tipoEmpresa };
+    req.tenantId = tenantId;
     next();
   } catch (e) {
     res.status(401).json({ ok: false, mensaje: 'Token inválido' });
