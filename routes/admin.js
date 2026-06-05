@@ -23,7 +23,11 @@ router.get('/salud', verifyToken, requireAdmin, async (req, res) => {
       COLECCIONES_PRINCIPALES.map(c => col(tenantId, c).get())
     );
     const colecciones = {};
-    COLECCIONES_PRINCIPALES.forEach((c, i) => { colecciones[c] = snaps[i].size; });
+    let registros = 0;
+    COLECCIONES_PRINCIPALES.forEach((c, i) => {
+      colecciones[c] = snaps[i].size;
+      registros += snaps[i].size;
+    });
 
     let ultimaUbicacion = null;
     try {
@@ -33,11 +37,33 @@ router.get('/salud', verifyToken, requireAdmin, async (req, res) => {
         const ts = d.data().timestamp || '';
         if (!mas || ts > mas.timestamp) mas = { usuario: d.data().usuario || d.id, timestamp: ts };
       });
-      ultimaUbicacion = mas;
-    } catch (eUb) {}
+      ultimaUbicacion = mas ? `${mas.usuario} · ${mas.timestamp}` : '—';
+    } catch (eUb) { ultimaUbicacion = '—'; }
+
+    // Trigger states from empresa doc
+    let triggers = { backup: false, cierre: false, renovacion: false, vencimientos: false, resumen: false };
+    let ultimoBackup = '—';
+    let notifEmail = '';
+    try {
+      const empresaDoc = await db.collection('empresas').doc(tenantId).get();
+      if (empresaDoc.exists) {
+        const d = empresaDoc.data();
+        const t = d.triggers || {};
+        triggers = {
+          backup:      !!(t.backupSemanal?.activo   || t.backup?.activo),
+          cierre:      !!(t.cierreDia?.activo),
+          renovacion:  !!(t.renovacionMes?.activo),
+          vencimientos:!!(t.vencimientos?.activo),
+          resumen:     !!(t.resumenMensual?.activo),
+        };
+        ultimoBackup = d.ultimoBackup || '—';
+        notifEmail   = d.notifEmail || '';
+      }
+    } catch (eEmp) {}
 
     res.json({
-      ok: true, colecciones, ultimaUbicacion, fechaConsulta: fechaHoyAR(),
+      ok: true, colecciones, registros, hojas: COLECCIONES_PRINCIPALES.length,
+      triggers, ultimoBackup, ultimaUbicacion, notifEmail, fechaConsulta: fechaHoyAR(),
     });
   } catch (e) { errHandler(res, req, e); }
 });
@@ -99,6 +125,44 @@ router.post('/whatsapp-ahora', verifyToken, requireAdmin, async (req, res) => {
 
 router.post('/probar-whatsapp', verifyToken, requireAdmin, async (req, res) => {
   res.json({ ok: false, mensaje: 'Configurar CALLMEBOT_PHONE y CALLMEBOT_APIKEY en el servidor para probar WhatsApp' });
+});
+
+// ── EMAIL NOTIFICACIONES ──────────────────────────────────────────────────────
+
+router.get('/notif-email', verifyToken, requireAdmin, async (req, res) => {
+  try {
+    const doc = await db.collection('empresas').doc(req.tenantId).get();
+    res.json({ ok: true, email: doc.exists ? (doc.data().notifEmail || '') : '' });
+  } catch (e) { errHandler(res, req, e); }
+});
+
+router.post('/notif-email', verifyToken, requireAdmin, async (req, res) => {
+  try {
+    const { email } = req.body;
+    await db.collection('empresas').doc(req.tenantId).set(
+      { notifEmail: email || '', actualizadoEn: new Date().toISOString() },
+      { merge: true }
+    );
+    res.json({ ok: true, mensaje: 'Email de notificaciones guardado ✓' });
+  } catch (e) { errHandler(res, req, e); }
+});
+
+// ── INSTALAR TODOS LOS TRIGGERS ───────────────────────────────────────────────
+
+router.post('/instalar-todos-triggers', verifyToken, requireAdmin, async (req, res) => {
+  try {
+    const ahora = new Date().toISOString();
+    await db.collection('empresas').doc(req.tenantId).set({
+      triggers: {
+        backupSemanal:  { activo: true, actualizadoEn: ahora },
+        cierreDia:      { activo: true, actualizadoEn: ahora },
+        renovacionMes:  { activo: true, actualizadoEn: ahora },
+        vencimientos:   { activo: true, actualizadoEn: ahora },
+        resumenMensual: { activo: true, actualizadoEn: ahora },
+      },
+    }, { merge: true });
+    res.json({ ok: true, mensaje: 'Todos los triggers instalados ✓' });
+  } catch (e) { errHandler(res, req, e); }
 });
 
 // ── BACKUP ────────────────────────────────────────────────────────────────────
