@@ -114,6 +114,84 @@ router.delete('/diaria/:choferId', auth, async (req, res) => {
   } catch (e) { err(res, req, e); }
 });
 
+// ── Mi ruta (chofer logueado) ─────────────────────────────────────────────────
+// GET /api/asistencia/mi-ruta?fecha=YYYY-MM-DD
+// Devuelve las paradas del chofer para la fecha, enriquecidas con GPS de registro.
+router.get('/mi-ruta', auth, async (req, res) => {
+  try {
+    const { fecha } = req.query;
+    if (!fecha) return res.status(400).json({ ok: false, mensaje: 'Falta la fecha.' });
+
+    const uid    = req.user.uid;
+    const email  = req.user.email || '';
+
+    // Obtener nombre del chofer desde su perfil
+    let nombreChofer = '';
+    try {
+      const perfilDoc = await col(req.tenantId, 'usuarios').doc(uid).get();
+      if (perfilDoc.exists) {
+        const p = perfilDoc.data();
+        nombreChofer = p.nombre || p.usuario || email.split('@')[0];
+      } else {
+        nombreChofer = email.split('@')[0];
+      }
+    } catch { nombreChofer = uid; }
+
+    // Buscar asignación del día: primero por UID, luego por nombre
+    const snap = await col(req.tenantId, 'ASISTENCIA').get();
+    const docs  = snap.docs.map(d => ({ _docId: d.id, ...d.data() }));
+
+    const asignacion = docs.find(d =>
+      d.fecha === fecha && (
+        d.choferId    === uid          ||
+        d.choferId    === nombreChofer ||
+        d.choferNombre === nombreChofer
+      )
+    );
+
+    const beneficiarios = asignacion?.beneficiarios || [];
+
+    // Enriquecer con GPS del registro
+    const regSnap = await col(req.tenantId, 'registro').get();
+    const gpsMap  = {};
+    regSnap.docs.forEach(d => {
+      const data = d.data();
+      const key  = data['ID'] || d.id;
+      const lat  = parseFloat(data['LAT']  || data['lat']  || 0);
+      const lng  = parseFloat(data['LNG']  || data['lng']  || data['lon'] || 0);
+      gpsMap[key]  = { lat: isFinite(lat) ? lat : 0, lng: isFinite(lng) ? lng : 0, fsId: d.id };
+    });
+
+    const paradas = beneficiarios
+      .map((b, i) => {
+        const id  = b.beneficiarioId || b.id || '';
+        const gps = gpsMap[id] || {};
+        const lat = gps.lat || 0;
+        const lng = gps.lng || 0;
+        return {
+          orden:          b.ordenVisita || (i + 1),
+          beneficiarioId: id,
+          fsId:           gps.fsId || id,
+          nombre:         b.nombre        || '',
+          domicilio:      b.domicilio     || '',
+          horarioTurno:   b.horarioTurno  || '',
+          lat:            lat !== 0 ? lat : null,
+          lng:            lng !== 0 ? lng : null,
+          tieneGPS:       !!(lat && lng),
+        };
+      })
+      .sort((a, b) => a.orden - b.orden);
+
+    const sinGPS = paradas.filter(p => !p.tieneGPS).length;
+
+    res.json({
+      ok: true, fecha, choferNombre: nombreChofer,
+      paradas, total: paradas.length,
+      sinGPS, conGPS: paradas.length - sinGPS,
+    });
+  } catch (e) { err(res, req, e); }
+});
+
 // ── Optimizar orden con IA — idéntico al GAS asist_armarRecorridoConIA ────────
 // POST /api/asistencia/optimizar
 // Body: { choferId, choferNombre, beneficiarios: [{ id, nombre, domicilio, horarioTurno }] }
