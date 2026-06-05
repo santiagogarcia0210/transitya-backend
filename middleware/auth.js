@@ -11,10 +11,10 @@ const verifyToken = async (req, res, next) => {
 
     // Fallback: stale token or manually-created account may lack custom claims in JWT.
     // Re-fetch from Firebase Auth to get the persisted claims.
-    if (!tenantId) {
+    if (!tenantId || !rol) {
       const userRecord = await auth.getUser(decoded.uid);
       const claims = userRecord.customClaims || {};
-      tenantId    = claims.tenantId;
+      tenantId    = tenantId    || claims.tenantId;
       rol         = rol         || claims.rol;
       tipoEmpresa = tipoEmpresa || claims.tipoEmpresa;
     }
