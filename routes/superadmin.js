@@ -285,6 +285,249 @@ router.post('/mensajes', async (req, res) => {
   } catch (e) { errHandler(res, req, e); }
 });
 
+// ── DASHBOARD COMPLETO ────────────────────────────────────────────────────────
+
+router.get('/dashboard', async (req, res) => {
+  try {
+    const snap = await db.collection('empresas').get();
+    const empresas = snap.docs.map(d => ({ tenantId: d.id, ...d.data() })).filter(e => !e.eliminada);
+    const ahora = new Date();
+    const en7Dias = new Date(); en7Dias.setDate(ahora.getDate() + 7);
+    let activas = 0, suspendidas = 0, ingresosMes = 0;
+    const distribucionPlan = {};
+    const porVencer = [];
+    const ultimosPagos = [];
+    const mesHoy = ahora.toISOString().slice(0, 7);
+    const nuevasPorMes = {};
+    for (let i = 5; i >= 0; i--) {
+      const d = new Date(ahora.getFullYear(), ahora.getMonth() - i, 1);
+      nuevasPorMes[`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`] = 0;
+    }
+    empresas.forEach(e => {
+      const k = (e.creadoEn || e._createdAt || '').slice(0, 7);
+      if (nuevasPorMes[k] !== undefined) nuevasPorMes[k]++;
+    });
+    const withSusc = await Promise.all(empresas.map(async emp => {
+      let susc = {};
+      try {
+        const s = await db.collection('empresas').doc(emp.tenantId).collection('suscripcion').doc('actual').get();
+        if (s.exists) susc = s.data();
+      } catch(e) {}
+      return { ...emp, susc };
+    }));
+    for (const emp of withSusc) {
+      if (emp.suspendida === true || emp.activo === false) { suspendidas++; continue; }
+      activas++;
+      const plan = emp.susc.plan || 'prueba';
+      distribucionPlan[plan] = (distribucionPlan[plan] || 0) + 1;
+      if (emp.susc.fechaProximoCobro) {
+        const fv = new Date(emp.susc.fechaProximoCobro);
+        const dias = Math.ceil((fv - ahora) / 86400000);
+        if (fv <= en7Dias && dias >= 0)
+          porVencer.push({ tenantId: emp.tenantId, nombre: emp.nombre || emp.tenantId, plan, diasRestantes: dias, fechaVencimiento: emp.susc.fechaProximoCobro });
+      }
+    }
+    for (const emp of withSusc.slice(0, 20)) {
+      try {
+        const pSnap = await db.collection('empresas').doc(emp.tenantId).collection('pagos')
+          .orderBy('fecha', 'desc').limit(2).get();
+        pSnap.docs.forEach(d => {
+          const p = d.data();
+          ultimosPagos.push({ id: d.id, tenantId: emp.tenantId, empresa: emp.nombre || emp.tenantId, ...p });
+          if (p.estado === 'pagado' && String(p.fecha || '').slice(0, 7) === mesHoy) ingresosMes += Number(p.monto || 0);
+        });
+      } catch(e) {}
+    }
+    ultimosPagos.sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || '')));
+    let totalUsuarios = 0;
+    try { const us = await db.collectionGroup('usuarios').limit(1000).get(); totalUsuarios = us.size; } catch(e) {}
+    res.json({
+      ok: true,
+      totalEmpresas: empresas.length, activas, suspendidas, totalUsuarios, ingresosMes,
+      distribucionPlan, porVencer,
+      ultimosPagos: ultimosPagos.slice(0, 8),
+      nuevasPorMes
+    });
+  } catch (e) { errHandler(res, req, e); }
+});
+
+// ── PAGOS FIRESTORE ───────────────────────────────────────────────────────────
+
+router.get('/pagos', async (req, res) => {
+  try {
+    const { tenantId: filtroTenant, mes, estado: filtroEstado } = req.query;
+    const empSnap = await db.collection('empresas').get();
+    const empresasIds = empSnap.docs.map(d => ({ id: d.id, nombre: d.data().nombre || d.id }));
+    const todos = [];
+    for (const emp of empresasIds) {
+      if (filtroTenant && emp.id !== filtroTenant) continue;
+      try {
+        let q = db.collection('empresas').doc(emp.id).collection('pagos').orderBy('fecha', 'desc').limit(30);
+        const pSnap = await q.get();
+        pSnap.docs.forEach(d => {
+          const p = { id: d.id, tenantId: emp.id, empresa: emp.nombre, ...d.data() };
+          if (mes && String(p.fecha || '').slice(0, 7) !== mes) return;
+          if (filtroEstado && p.estado !== filtroEstado) return;
+          todos.push(p);
+        });
+      } catch(e) {}
+    }
+    todos.sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || '')));
+    const totalCobrado = todos.filter(p => p.estado === 'pagado').reduce((s, p) => s + Number(p.monto || 0), 0);
+    res.json({ ok: true, pagos: todos, totalCobrado });
+  } catch (e) { errHandler(res, req, e); }
+});
+
+router.post('/pagos/:tenantId/registrar', async (req, res) => {
+  try {
+    const { tenantId } = req.params;
+    const { monto, plan, dias, observaciones, metodo } = req.body;
+    const pagoId = 'pago_' + Date.now();
+    const fecha = new Date().toISOString();
+    await db.collection('empresas').doc(tenantId).collection('pagos').doc(pagoId).set({
+      id: pagoId, monto: Number(monto || 0), plan: plan || 'pro',
+      dias: Number(dias || 30), metodo: metodo || 'manual',
+      observaciones: observaciones || '', estado: 'pagado',
+      fecha, creadoEn: fecha, registradoPor: req.user.email
+    });
+    // Extend subscription
+    const suscRef = db.collection('empresas').doc(tenantId).collection('suscripcion').doc('actual');
+    const suscSnap = await suscRef.get();
+    const susc = suscSnap.exists ? suscSnap.data() : {};
+    let base = susc.fechaProximoCobro ? new Date(susc.fechaProximoCobro) : new Date();
+    if (base < new Date()) base = new Date();
+    base.setDate(base.getDate() + Number(dias || 30));
+    await suscRef.set({ ...susc, plan: plan || susc.plan || 'pro', estado: 'activa', fechaProximoCobro: base.toISOString(), _updatedAt: fecha }, { merge: true });
+    // Reactivate if suspended
+    await db.collection('empresas').doc(tenantId).update({ activo: true, suspendida: false });
+    // Log
+    try {
+      await db.collection('LOGS_AUDITORIA').add({ accion: 'PAGO', tenantId, email: req.user.email, monto: Number(monto || 0), plan, dias: Number(dias || 30), fecha, ip: req.ip || '' });
+    } catch(e) {}
+    res.json({ ok: true, pagoId, nuevaFecha: base.toISOString() });
+  } catch (e) { errHandler(res, req, e); }
+});
+
+// ── FEATURES ──────────────────────────────────────────────────────────────────
+
+router.get('/features/:tenantId', async (req, res) => {
+  try {
+    const base = db.collection('empresas').doc(req.params.tenantId);
+    const [featDoc, suscDoc] = await Promise.all([
+      base.collection('config').doc('features').get(),
+      base.collection('suscripcion').doc('actual').get()
+    ]);
+    res.json({
+      ok: true,
+      features: featDoc.exists ? featDoc.data() : {},
+      plan: suscDoc.exists ? (suscDoc.data().plan || 'prueba') : 'prueba'
+    });
+  } catch (e) { errHandler(res, req, e); }
+});
+
+router.put('/features/:tenantId', async (req, res) => {
+  try {
+    await db.collection('empresas').doc(req.params.tenantId).collection('config').doc('features')
+      .set({ ...req.body, _updatedAt: new Date().toISOString() });
+    try { await db.collection('LOGS_AUDITORIA').add({ accion: 'FEATURES', tenantId: req.params.tenantId, email: req.user.email, fecha: new Date().toISOString(), ip: req.ip || '' }); } catch(e) {}
+    res.json({ ok: true });
+  } catch (e) { errHandler(res, req, e); }
+});
+
+// ── USUARIO POR UID ───────────────────────────────────────────────────────────
+
+router.get('/usuarios/:uid', async (req, res) => {
+  try {
+    const { uid } = req.params;
+    let firebaseUser = {};
+    try { const u = await admin.auth().getUser(uid); firebaseUser = { email: u.email, displayName: u.displayName, disabled: u.disabled, emailVerified: u.emailVerified, creationTime: u.metadata.creationTime, lastSignInTime: u.metadata.lastSignInTime, customClaims: u.customClaims || {} }; } catch(e) {}
+    const snap = await db.collectionGroup('usuarios').where('uid', '==', uid).limit(1).get();
+    const firestoreUser = snap.empty ? {} : { id: snap.docs[0].id, ...snap.docs[0].data() };
+    res.json({ ok: true, usuario: { uid, ...firebaseUser, ...firestoreUser } });
+  } catch (e) { errHandler(res, req, e); }
+});
+
+router.put('/usuarios/:uid/estado', async (req, res) => {
+  try {
+    const { uid } = req.params;
+    const { activo, motivo } = req.body;
+    await admin.auth().updateUser(uid, { disabled: !activo });
+    const snap = await db.collectionGroup('usuarios').where('uid', '==', uid).limit(1).get();
+    if (!snap.empty) await snap.docs[0].ref.update({ activo: !!activo, motivoSuspension: motivo || '' });
+    try { await db.collection('LOGS_AUDITORIA').add({ accion: activo ? 'ACTIVAR_USUARIO' : 'SUSPENDER_USUARIO', uid, email: req.user.email, motivo: motivo || '', fecha: new Date().toISOString(), ip: req.ip || '' }); } catch(e) {}
+    res.json({ ok: true });
+  } catch (e) { errHandler(res, req, e); }
+});
+
+// ── COMUNICACIONES ────────────────────────────────────────────────────────────
+
+router.post('/comunicaciones', async (req, res) => {
+  try {
+    const { tenantId, asunto, mensaje, tipo } = req.body;
+    if (!mensaje?.trim()) return res.status(400).json({ ok: false, mensaje: 'Mensaje vacío.' });
+    const id = 'com_' + Date.now();
+    const fecha = new Date().toISOString();
+    const docData = { id, asunto: asunto || '', mensaje: mensaje.trim(), tipo: tipo || 'info', fecha, leido: false, de: req.user.email };
+    const histRef = db.collection('sa_comunicaciones').doc(id);
+    await histRef.set({ ...docData, tenantId: tenantId || 'todos' });
+    if (!tenantId || tenantId === 'todos') {
+      const snap = await db.collection('empresas').get();
+      const batch = db.batch();
+      snap.docs.forEach(d => {
+        if (d.data().eliminada) return;
+        batch.set(d.ref.collection('COMUNICACIONES').doc(id), docData);
+      });
+      await batch.commit();
+    } else {
+      await db.collection('empresas').doc(tenantId).collection('COMUNICACIONES').doc(id).set(docData);
+    }
+    res.json({ ok: true, id });
+  } catch (e) { errHandler(res, req, e); }
+});
+
+router.get('/comunicaciones', async (req, res) => {
+  try {
+    const snap = await db.collection('sa_comunicaciones').orderBy('fecha', 'desc').limit(50).get();
+    res.json({ ok: true, comunicaciones: snap.docs.map(d => d.data()) });
+  } catch (e) { errHandler(res, req, e); }
+});
+
+// ── LOGS AUDITORÍA ────────────────────────────────────────────────────────────
+
+router.get('/logs', async (req, res) => {
+  try {
+    const { tenantId, tipo, limite } = req.query;
+    let q = db.collection('LOGS_AUDITORIA').orderBy('fecha', 'desc').limit(Number(limite) || 200);
+    const snap = await q.get();
+    let logs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    if (tenantId) logs = logs.filter(l => l.tenantId === tenantId);
+    if (tipo) logs = logs.filter(l => String(l.accion || '').includes(tipo));
+    res.json({ ok: true, logs });
+  } catch (e) { errHandler(res, req, e); }
+});
+
+// ── ESTADO EMPRESA (TOGGLE) ───────────────────────────────────────────────────
+
+router.put('/empresas/:id/estado', async (req, res) => {
+  try {
+    const { activo, motivo } = req.body;
+    const base = db.collection('empresas').doc(req.params.id);
+    if (activo) {
+      await Promise.all([
+        base.update({ activo: true, suspendida: false }),
+        base.collection('suscripcion').doc('actual').set({ estado: 'activa', _updatedAt: new Date().toISOString() }, { merge: true })
+      ]);
+    } else {
+      await Promise.all([
+        base.update({ activo: false, suspendida: true, motivoSuspension: motivo || '', fechaSuspension: new Date().toISOString() }),
+        base.collection('suscripcion').doc('actual').set({ estado: 'suspendida', _updatedAt: new Date().toISOString() }, { merge: true })
+      ]);
+    }
+    try { await db.collection('LOGS_AUDITORIA').add({ accion: activo ? 'REACTIVAR' : 'SUSPENDER', tenantId: req.params.id, email: req.user.email, motivo: motivo || '', fecha: new Date().toISOString(), ip: req.ip || '' }); } catch(e) {}
+    res.json({ ok: true });
+  } catch (e) { errHandler(res, req, e); }
+});
+
 // ── STATS RÁPIDAS ─────────────────────────────────────────────────────────────
 
 router.get('/stats', async (req, res) => {
