@@ -7,6 +7,23 @@ const https = require('https');
 const errHandler = (res, req, e) => {
   console.error('[SUPERADMIN]', req.path, e.message);
   res.status(500).json({ ok: false, mensaje: e.message });
+}
+
+// Convierte Firestore Timestamp, Date u otro valor a string ISO (o '')
+function toISO(v) {
+  if (!v) return '';
+  if (typeof v.toDate === 'function') return v.toDate().toISOString();
+  if (v instanceof Date) return v.toISOString();
+  return String(v);
+}
+
+// Devuelve un objeto Date válido desde Timestamp, Date o string ISO (o null)
+function tsToDate(v) {
+  if (!v) return null;
+  if (typeof v.toDate === 'function') return v.toDate();
+  if (v instanceof Date) return v;
+  const d = new Date(v);
+  return isNaN(d.getTime()) ? null : d;
 };
 
 function mpFetch(path, params) {
@@ -48,9 +65,9 @@ router.get('/empresas', async (req, res) => {
       return {
         tenantId, nombre: emp.nombre || tenantId, tipo: emp.tipo || '',
         email: emp.email || '', telefono: emp.telefono || '',
-        fechaRegistro: emp.creadoEn || emp._createdAt || '',
+        fechaRegistro: toISO(emp.creadoEn || emp._createdAt),
         plan: susc.plan || 'prueba', estadoSusc: susc.estado || 'prueba',
-        fechaProximoCobro: susc.fechaProximoCobro || '',
+        fechaProximoCobro: toISO(susc.fechaProximoCobro),
         choferesActivos, maxChoferes: susc.choferesIncluidos || 2,
         activo: emp.activo !== false, suspendida: emp.suspendida === true
       };
@@ -101,7 +118,7 @@ router.put('/empresas/:id/suscripcion/extender', async (req, res) => {
     const ref = db.collection('empresas').doc(req.params.id).collection('suscripcion').doc('actual');
     const snap = await ref.get();
     const susc = snap.exists ? snap.data() : {};
-    let base = susc.fechaProximoCobro ? new Date(susc.fechaProximoCobro) : new Date();
+    let base = tsToDate(susc.fechaProximoCobro) || new Date();
     if (base < new Date()) base = new Date();
     base.setDate(base.getDate() + Number(dias || 7));
     susc.fechaProximoCobro = base.toISOString();
@@ -202,7 +219,7 @@ router.get('/metricas', async (req, res) => {
         else if (estado === 'cancelada') { canceladas++; }
         else                             { distPlan.prueba++; }
 
-      const fr = emp.creadoEn || emp._createdAt || '';
+      const fr = toISO(emp.creadoEn || emp._createdAt);
       if (fr >= inicioMes && fr <= finMes) nuevasMes++;
     }
 
@@ -325,7 +342,7 @@ router.get('/dashboard', async (req, res) => {
       nuevasPorMes[`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`] = 0;
     }
     empresas.forEach(e => {
-      const k = (e.creadoEn || e._createdAt || '').slice(0, 7);
+      const k = toISO(e.creadoEn || e._createdAt).slice(0, 7);
       if (nuevasPorMes[k] !== undefined) nuevasPorMes[k]++;
     });
     const withSusc = await Promise.all(empresas.map(async emp => {
@@ -342,10 +359,12 @@ router.get('/dashboard', async (req, res) => {
       const plan = emp.susc.plan || 'prueba';
       distribucionPlan[plan] = (distribucionPlan[plan] || 0) + 1;
       if (emp.susc.fechaProximoCobro) {
-        const fv = new Date(emp.susc.fechaProximoCobro);
-        const dias = Math.ceil((fv - ahora) / 86400000);
-        if (fv <= en7Dias && dias >= 0)
-          porVencer.push({ tenantId: emp.tenantId, nombre: emp.nombre || emp.tenantId, plan, diasRestantes: dias, fechaVencimiento: emp.susc.fechaProximoCobro });
+        const fv = tsToDate(emp.susc.fechaProximoCobro);
+        if (fv) {
+          const dias = Math.ceil((fv - ahora) / 86400000);
+          if (fv <= en7Dias && dias >= 0)
+            porVencer.push({ tenantId: emp.tenantId, nombre: emp.nombre || emp.tenantId, plan, diasRestantes: dias, fechaVencimiento: fv.toISOString() });
+        }
       }
     }
     for (const emp of withSusc.slice(0, 20)) {
@@ -354,8 +373,9 @@ router.get('/dashboard', async (req, res) => {
           .orderBy('fecha', 'desc').limit(2).get();
         pSnap.docs.forEach(d => {
           const p = d.data();
-          ultimosPagos.push({ id: d.id, tenantId: emp.tenantId, empresa: emp.nombre || emp.tenantId, ...p });
-          if (p.estado === 'pagado' && String(p.fecha || '').slice(0, 7) === mesHoy) ingresosMes += Number(p.monto || 0);
+          const pFecha = toISO(p.fecha);
+          ultimosPagos.push({ id: d.id, tenantId: emp.tenantId, empresa: emp.nombre || emp.tenantId, ...p, fecha: pFecha });
+          if (p.estado === 'pagado' && pFecha.slice(0, 7) === mesHoy) ingresosMes += Number(p.monto || 0);
         });
       } catch(e) {}
     }
@@ -390,8 +410,9 @@ router.get('/pagos', async (req, res) => {
         let q = db.collection('empresas').doc(emp.id).collection('pagos').orderBy('fecha', 'desc').limit(30);
         const pSnap = await q.get();
         pSnap.docs.forEach(d => {
-          const p = { id: d.id, tenantId: emp.id, empresa: emp.nombre, ...d.data() };
-          if (mes && String(p.fecha || '').slice(0, 7) !== mes) return;
+          const raw = d.data();
+          const p = { id: d.id, tenantId: emp.id, empresa: emp.nombre, ...raw, fecha: toISO(raw.fecha) };
+          if (mes && p.fecha.slice(0, 7) !== mes) return;
           if (filtroEstado && p.estado !== filtroEstado) return;
           todos.push(p);
         });
@@ -419,7 +440,7 @@ router.post('/pagos/:tenantId/registrar', async (req, res) => {
     const suscRef = db.collection('empresas').doc(tenantId).collection('suscripcion').doc('actual');
     const suscSnap = await suscRef.get();
     const susc = suscSnap.exists ? suscSnap.data() : {};
-    let base = susc.fechaProximoCobro ? new Date(susc.fechaProximoCobro) : new Date();
+    let base = tsToDate(susc.fechaProximoCobro) || new Date();
     if (base < new Date()) base = new Date();
     base.setDate(base.getDate() + Number(dias || 30));
     await suscRef.set({ ...susc, plan: plan || susc.plan || 'pro', estado: 'activa', fechaProximoCobro: base.toISOString(), _updatedAt: fecha }, { merge: true });
