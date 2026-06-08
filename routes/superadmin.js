@@ -243,16 +243,36 @@ router.get('/pagos-mp', async (req, res) => {
 
 router.get('/usuarios', async (req, res) => {
   try {
-    const { busqueda } = req.query;
-    const snap = await db.collectionGroup('usuarios').limit(300).get();
-    let usuarios = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-    if (busqueda) {
-      const q = String(busqueda).toLowerCase();
-      usuarios = usuarios.filter(u =>
-        String(u.email || '').toLowerCase().includes(q) ||
-        String(u.nombre || '').toLowerCase().includes(q)
-      );
-    }
+    // Empresa names lookup
+    const empSnap = await db.collection('empresas').get();
+    const empNames = {};
+    empSnap.docs.forEach(d => { empNames[d.id] = d.data().nombre || d.id; });
+
+    // List all Firebase Auth users (paginated, max 1000 per call)
+    const all = [];
+    let pageToken;
+    do {
+      const result = await admin.auth().listUsers(1000, pageToken);
+      all.push(...result.users);
+      pageToken = result.pageToken;
+    } while (pageToken);
+
+    const usuarios = all.map(u => {
+      const claims = u.customClaims || {};
+      const tenantId = claims.tenantId || '';
+      return {
+        uid:         u.uid,
+        email:       u.email || '',
+        displayName: u.displayName || '',
+        disabled:    u.disabled,
+        rol:         claims.rol || '',
+        tenantId,
+        empresa:     tenantId ? (empNames[tenantId] || tenantId) : '',
+        createdAt:   u.metadata.creationTime,
+        lastSignIn:  u.metadata.lastSignInTime || '',
+      };
+    });
+
     res.json({ ok: true, usuarios });
   } catch (e) { errHandler(res, req, e); }
 });
@@ -289,6 +309,7 @@ router.post('/mensajes', async (req, res) => {
 
 router.get('/dashboard', async (req, res) => {
   try {
+    console.log('[SA/dashboard] start uid:', req.user?.uid);
     const snap = await db.collection('empresas').get();
     const empresas = snap.docs.map(d => ({ tenantId: d.id, ...d.data() })).filter(e => !e.eliminada);
     const ahora = new Date();
@@ -341,6 +362,7 @@ router.get('/dashboard', async (req, res) => {
     ultimosPagos.sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || '')));
     let totalUsuarios = 0;
     try { const us = await db.collectionGroup('usuarios').limit(1000).get(); totalUsuarios = us.size; } catch(e) {}
+    console.log('[SA/dashboard] ok — empresas:', empresas.length, 'activas:', activas, 'usuarios:', totalUsuarios);
     res.json({
       ok: true,
       totalEmpresas: empresas.length, activas, suspendidas, totalUsuarios, ingresosMes,
@@ -348,7 +370,10 @@ router.get('/dashboard', async (req, res) => {
       ultimosPagos: ultimosPagos.slice(0, 8),
       nuevasPorMes
     });
-  } catch (e) { errHandler(res, req, e); }
+  } catch (e) {
+    console.error('[SA/dashboard] ERROR:', e.message, e.stack?.split('\n')[1]);
+    errHandler(res, req, e);
+  }
 });
 
 // ── PAGOS FIRESTORE ───────────────────────────────────────────────────────────
