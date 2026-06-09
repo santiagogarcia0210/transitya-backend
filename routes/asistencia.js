@@ -151,7 +151,7 @@ router.get('/mi-ruta', auth, async (req, res) => {
 
     const beneficiarios = asignacion?.beneficiarios || [];
 
-    // Enriquecer con GPS del registro
+    // Enriquecer con GPS y horarios del registro
     const regSnap = await col(req.tenantId, 'registro').get();
     const gpsMap  = {};
     regSnap.docs.forEach(d => {
@@ -159,7 +159,15 @@ router.get('/mi-ruta', auth, async (req, res) => {
       const key  = data['ID'] || d.id;
       const lat  = parseFloat(data['LAT']  || data['lat']  || 0);
       const lng  = parseFloat(data['LNG']  || data['lng']  || data['lon'] || 0);
-      gpsMap[key]  = { lat: isFinite(lat) ? lat : 0, lng: isFinite(lng) ? lng : 0, fsId: d.id };
+      const h = (data.horarios && typeof data.horarios === 'object') ? data.horarios : {};
+      gpsMap[key] = {
+        lat: isFinite(lat) ? lat : 0,
+        lng: isFinite(lng) ? lng : 0,
+        fsId: d.id,
+        horaIngreso: h.horaIngreso || '',
+        horaEgreso:  h.horaEgreso  || '',
+        tieneHorariosEspeciales: Array.isArray(h.horariosEspeciales) && h.horariosEspeciales.length > 0,
+      };
     });
 
     const paradas = beneficiarios
@@ -175,6 +183,9 @@ router.get('/mi-ruta', auth, async (req, res) => {
           nombre:         b.nombre        || '',
           domicilio:      b.domicilio     || '',
           horarioTurno:   b.horarioTurno  || '',
+          horaIngreso:    gps.horaIngreso || '',
+          horaEgreso:     gps.horaEgreso  || '',
+          tieneHorariosEspeciales: gps.tieneHorariosEspeciales || false,
           lat:            lat !== 0 ? lat : null,
           lng:            lng !== 0 ? lng : null,
           tieneGPS:       !!(lat && lng),
