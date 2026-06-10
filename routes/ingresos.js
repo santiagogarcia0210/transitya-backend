@@ -79,7 +79,10 @@ router.get('/', verifyToken, requireAdmin, async (req, res) => {
 
     res.json({
       ok: true,
-      resultados: todos.slice((pg - 1) * pp, pg * pp),
+      resultados: todos.slice((pg - 1) * pp, pg * pp).map(d => ({
+        ...d,
+        monto: Number(d.monto || d.MONTO || 0),
+      })),
       total,
       pagina: pg,
       totalPaginas: Math.max(1, Math.ceil(total / pp)),

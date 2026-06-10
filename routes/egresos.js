@@ -2,6 +2,7 @@ const router = require('express').Router();
 const Anthropic = require('@anthropic-ai/sdk');
 const { verifyToken, requireAdmin, requireModulo } = require('../middleware/auth');
 const { normalizarText_, parseMonto_, esMesDMY, col, randomUUID } = require('../utils');
+const { subirFoto } = require('../helpers/storage');
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -9,6 +10,24 @@ const errHandler = (res, req, e) => {
   console.error('[EGRESOS]', req.path, e.message);
   res.status(500).json({ ok: false, mensaje: e.message });
 };
+
+async function procesarComprobante(data, tenantId, id) {
+  const raw = data.comprobante;
+  if (!raw || !String(raw).startsWith('data:')) return;
+  try {
+    const matches = String(raw).match(/^data:([^;]+);base64,(.+)$/);
+    if (!matches) return;
+    const mimeType = matches[1];
+    const base64   = matches[2];
+    const ext      = mimeType.split('/')[1] || 'jpg';
+    const ruta     = `empresas/${tenantId}/egresos/${id}/comprobante.${ext}`;
+    const url      = await subirFoto(base64, mimeType, ruta);
+    data.comprobanteUrl = url;
+    data.comprobante    = url;
+  } catch (e) {
+    console.error('[EGRESOS] Storage upload error:', e.message);
+  }
+}
 
 // Parsear dd/MM/yyyy → número YYYYMMDD para ordenar
 const fechaSort = (f) => {
@@ -86,7 +105,15 @@ router.get('/', verifyToken, requireModulo('egresos'), async (req, res) => {
     const total = todos.length;
     const resultados = todos.slice((pg - 1) * pp, pg * pp);
 
-    res.json({ ok: true, resultados, total, pagina: pg, totalPaginas: Math.max(1, Math.ceil(total / pp)) });
+    res.json({
+      ok: true,
+      resultados: resultados.map(d => ({
+        ...d,
+        monto: Number(d.monto || d.MONTO || 0),
+        comprobante: d.comprobanteUrl || d.comprobante || '',
+      })),
+      total, pagina: pg, totalPaginas: Math.max(1, Math.ceil(total / pp)),
+    });
   } catch (e) { errHandler(res, req, e); }
 });
 
@@ -147,6 +174,7 @@ router.post('/', verifyToken, requireModulo('egresos'), async (req, res) => {
     data.CHOFER  = req.user.email;
     const id = String(data.ID || data.id || '').trim() || randomUUID();
     data.ID = id;
+    await procesarComprobante(data, req.tenantId, id);
     await col(req.tenantId, 'egresos').doc(id).set({ ...data, creadoEn: new Date() });
     res.json({ ok: true, mensaje: 'EGRESO GUARDADO', id });
   } catch (e) { errHandler(res, req, e); }
@@ -162,7 +190,9 @@ router.put('/:id', verifyToken, requireModulo('egresos'), async (req, res) => {
       if (normalizarText_(chofer) !== normalizarText_(req.user.email))
         return res.status(403).json({ ok: false, mensaje: 'Sin permisos' });
     }
-    await col(req.tenantId, 'egresos').doc(req.params.id).update(req.body);
+    const data = { ...req.body };
+    await procesarComprobante(data, req.tenantId, req.params.id);
+    await col(req.tenantId, 'egresos').doc(req.params.id).update(data);
     res.json({ ok: true });
   } catch (e) { errHandler(res, req, e); }
 });
