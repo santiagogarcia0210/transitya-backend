@@ -151,7 +151,20 @@ router.put('/:id', verifyToken, requireModulo('reportes'), async (req, res) => {
       if (normalizarText_(chofer) !== normalizarText_(req.user.email))
         return res.status(403).json({ ok: false, mensaje: 'Sin permisos' });
     }
-    await col(req.tenantId, 'reportes').doc(req.params.id).update(req.body);
+    const data = { ...req.body };
+    const fotoIni = data.fotoIniBase64 || data.FOTO_INI_B64;
+    const fotoFin = data.fotoFinBase64 || data.FOTO_FIN_B64;
+    const mime    = data.mimeTypeFotos || 'image/jpeg';
+    delete data.fotoIniBase64; delete data.FOTO_INI_B64;
+    delete data.fotoFinBase64; delete data.FOTO_FIN_B64;
+    delete data.mimeTypeFotos;
+    if (fotoIni) {
+      data.fotoIniUrl = await subirFoto(fotoIni, mime, `reportes/${req.tenantId}/${req.params.id}_ini.jpg`);
+    }
+    if (fotoFin) {
+      data.fotoFinUrl = await subirFoto(fotoFin, mime, `reportes/${req.tenantId}/${req.params.id}_fin.jpg`);
+    }
+    await col(req.tenantId, 'reportes').doc(req.params.id).update(data);
     res.json({ ok: true });
   } catch (e) { errHandler(res, req, e); }
 });
