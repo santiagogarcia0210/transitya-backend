@@ -62,14 +62,22 @@ router.get('/resumen', verifyToken, requireAdmin, async (req, res) => {
     let ingresosMesCount = 0, ingresosMesTotal = 0;
     let totalPagadoMes = 0, totalPresentadoMes = 0;
     snapIngresos.forEach(d => {
-      const doc = d.data();
+      const doc    = d.data();
+      const estado = String(doc.estado || doc.ESTADO || '').toUpperCase();
+      const monto  = parseMonto_(doc.monto || doc.MONTO || 0);
+
+      // totalPagadoMes: filter by payment date so invoices from previous months
+      // that were paid this month appear correctly (PATCH /:id/pagar saves fechaPago)
+      if (estado === 'PAGADO') {
+        const fechaPago = doc.fechaPago || doc.FECHAPAGO || doc.fecha || doc.FECHA || '';
+        if (esMesDMY(fechaPago, mes, anio)) totalPagadoMes += monto;
+      }
+
+      // Count / total / presentado: filter by invoice creation date
       const fecha = doc.fecha || doc.FECHA || '';
       if (!esMesDMY(fecha, mes, anio)) return;
       ingresosMesCount++;
-      const monto = parseMonto_(doc.monto || doc.MONTO || 0);
       ingresosMesTotal += monto;
-      const estado = String(doc.estado || doc.ESTADO || '').toUpperCase();
-      if (estado === 'PAGADO')     totalPagadoMes     += monto;
       if (estado === 'PRESENTADO') totalPresentadoMes += monto;
     });
 
