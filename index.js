@@ -12,8 +12,6 @@ app.use(cors({
   },
   credentials: true,
 }));
-// Preflight explícito para todas las rutas
-app.options('*', cors({ origin: (origin, cb) => { cb(null, !origin || ALLOWED_ORIGIN.test(origin) ? origin : false); }, credentials: true }));
 app.use(express.json({ limit: '5mb' }));
 
 // Rutas
