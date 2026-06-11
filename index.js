@@ -3,13 +3,17 @@ const express = require('express');
 const cors = require('cors');
 const app = express();
 
+const ALLOWED_ORIGIN = /transitya\.com$|vercel\.app$|localhost/;
 app.use(cors({
   origin: (origin, cb) => {
-    const allowed = !origin || /transitya\.com$|vercel\.app$|localhost/.test(origin);
-    cb(null, allowed);
+    // Sin origin (curl / server-to-server) o match del regex → permitir
+    // Pasar el origin string (no true/false) para que funcione con credentials: true
+    cb(null, !origin || ALLOWED_ORIGIN.test(origin) ? origin : false);
   },
-  credentials: true
+  credentials: true,
 }));
+// Preflight explícito para todas las rutas
+app.options('*', cors({ origin: (origin, cb) => { cb(null, !origin || ALLOWED_ORIGIN.test(origin) ? origin : false); }, credentials: true }));
 app.use(express.json({ limit: '5mb' }));
 
 // Rutas
