@@ -281,4 +281,95 @@ router.post('/optimizar', auth, async (req, res) => {
   }
 });
 
+// ── estado-hoy: resumen de asistencia del día actual por chofer ───────────────
+// GET /api/asistencia/estado-hoy
+// Usado en Dashboard (tabla de asistencia) y Administrador.
+router.get('/estado-hoy', auth, async (req, res) => {
+  try {
+    const hoy  = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+    const snap = await col(req.tenantId, 'ASISTENCIA').get();
+    const docs = snap.docs
+      .map(d => ({ id: d.id, ...d.data() }))
+      .filter(d => d.fecha === hoy);
+
+    const result = docs.map(d => {
+      const bens      = d.beneficiarios || [];
+      const presentes = bens.filter(b => b.presente === true).length;
+      const ausentes  = bens.filter(b => b.presente === false).length;
+      const pendientes= bens.filter(b => b.presente == null).length;
+      return {
+        chofer:     d.choferNombre || d.choferId || '',
+        presentes,
+        ausentes,
+        pendientes,
+        total:      bens.length,
+        tomada:     d.confirmado === true || presentes + ausentes > 0,
+      };
+    });
+
+    res.json({ ok: true, data: result });
+  } catch (e) { err(res, req, e); }
+});
+
+// ── beneficiarios: lista de beneficiarios asignados a un chofer para una fecha ─
+// GET /api/asistencia/beneficiarios?fecha=dd/MM/yyyy
+// Usado en ChoferDashboard y página de asistencia.
+router.get('/beneficiarios', auth, async (req, res) => {
+  try {
+    const { fecha } = req.query;
+    if (!fecha) return res.status(400).json({ ok: false, mensaje: 'Falta la fecha.' });
+
+    const uid   = req.user.uid;
+    const email = req.user.email || '';
+    const isAdm = req.user.rol === 'admin' || req.user.rol === 'administrador';
+
+    const snap = await col(req.tenantId, 'ASISTENCIA').get();
+    let docs = snap.docs
+      .map(d => ({ id: d.id, ...d.data() }))
+      .filter(d => d.fecha === fecha);
+
+    if (!isAdm) {
+      docs = docs.filter(d => d.choferId === uid || d.choferId === email);
+    }
+
+    const beneficiarios = docs.flatMap(d => d.beneficiarios || []);
+    res.json({ ok: true, beneficiarios, total: beneficiarios.length });
+  } catch (e) { err(res, req, e); }
+});
+
+// ── estado: presencias marcadas para un chofer/fecha ─────────────────────────
+// GET /api/asistencia/estado?fecha=dd/MM/yyyy
+// Usado en ChoferDashboard para contar presentes/pendientes del día.
+router.get('/estado', auth, async (req, res) => {
+  try {
+    const { fecha } = req.query;
+    if (!fecha) return res.status(400).json({ ok: false, mensaje: 'Falta la fecha.' });
+
+    const uid   = req.user.uid;
+    const email = req.user.email || '';
+    const isAdm = req.user.rol === 'admin' || req.user.rol === 'administrador';
+
+    const snap = await col(req.tenantId, 'ASISTENCIA').get();
+    let docs = snap.docs
+      .map(d => ({ id: d.id, ...d.data() }))
+      .filter(d => d.fecha === fecha);
+
+    if (!isAdm) {
+      docs = docs.filter(d => d.choferId === uid || d.choferId === email);
+    }
+
+    const items = docs.flatMap(d =>
+      (d.beneficiarios || []).map(b => ({
+        id:        b.id   || '',
+        nombre:    b.nombre || '',
+        presente:  b.presente ?? null,
+        choferId:  d.choferId,
+        chofer:    d.choferNombre || d.choferId || '',
+      }))
+    );
+
+    res.json({ ok: true, data: items, total: items.length });
+  } catch (e) { err(res, req, e); }
+});
+
 module.exports = router;
