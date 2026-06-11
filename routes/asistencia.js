@@ -372,4 +372,80 @@ router.get('/estado', auth, async (req, res) => {
   } catch (e) { err(res, req, e); }
 });
 
+// ── Programados: beneficiarios cuya programación semanal incluye el día ────────
+// GET /api/asistencia/programados?fecha=YYYY-MM-DD
+// Lee registro.horarios.dias y filtra por el día de semana de la fecha dada.
+router.get('/programados', auth, async (req, res) => {
+  try {
+    const { fecha } = req.query;
+    if (!fecha) return res.status(400).json({ ok: false, mensaje: 'Falta la fecha (YYYY-MM-DD).' });
+
+    const DOW = [null, 'lunes', 'martes', 'miercoles', 'jueves', 'viernes', null];
+    const diaNombre = DOW[new Date(fecha + 'T00:00:00').getDay()];
+    if (!diaNombre) return res.json({ ok: true, beneficiarios: [], diaNombre: 'fin_de_semana', total: 0 });
+
+    const snap = await col(req.tenantId, 'registro').get();
+    const beneficiarios = [];
+    snap.docs.forEach(d => {
+      const doc = d.data();
+      const h = (doc.horarios && typeof doc.horarios === 'object') ? doc.horarios : {};
+      const diasArr = Array.isArray(h.dias) ? h.dias : [];
+
+      // Fallback: legacy string fields like "LUN/MIE/VIE" or "LUNES,MARTES"
+      const diasStr = String(doc.DIAS || doc.dias || doc['DIAS QUE VIENE'] || '')
+        .toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+
+      const norm = (s) => String(s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+      const vieneEste = diasArr.some(x => norm(x) === diaNombre) ||
+                        (diasStr.length > 0 && diasStr.includes(diaNombre.substring(0, 3)));
+      if (!vieneEste) return;
+
+      const especiales = Array.isArray(h.horariosEspeciales) ? h.horariosEspeciales : [];
+      beneficiarios.push({
+        id:           String(doc.ID || doc.id || d.id),
+        nombre:       String(doc['APELLIDO Y NOMBRE'] || doc.nombre || doc.NOMBRE || ''),
+        domicilio:    String(doc.DOMICILIO || doc.domicilio || ''),
+        horarioTurno: String(doc.horarioTurno || doc['HORARIO TURNO'] || doc.HORARIO_TURNO || ''),
+        horaIngreso:  String(h.horaIngreso || ''),
+        horaEgreso:   String(h.horaEgreso  || ''),
+        tieneHorariosEspeciales: especiales.length > 0,
+      });
+    });
+
+    beneficiarios.sort((a, b) => a.nombre.localeCompare(b.nombre));
+    res.json({ ok: true, beneficiarios, diaNombre, total: beneficiarios.length });
+  } catch (e) { err(res, req, e); }
+});
+
+// ── Presencia diaria: guardar y leer marcas presente/ausente por fecha ─────────
+// POST /api/asistencia/presencia  body: { fecha: 'YYYY-MM-DD', marcas: [{id, nombre, presente}] }
+// GET  /api/asistencia/presencia?fecha=YYYY-MM-DD
+router.post('/presencia', auth, async (req, res) => {
+  try {
+    const { fecha, marcas } = req.body;
+    if (!fecha) return res.status(400).json({ ok: false, mensaje: 'Falta la fecha.' });
+    const data = {
+      fecha,
+      marcas:        Array.isArray(marcas) ? marcas : [],
+      actualizadoEn: new Date().toISOString(),
+    };
+    await col(req.tenantId, 'asistencia_presencia').doc(fecha).set(data);
+    const presentes = data.marcas.filter(m => m.presente === true).length;
+    res.json({ ok: true, total: data.marcas.length, presentes });
+  } catch (e) { err(res, req, e); }
+});
+
+router.get('/presencia', auth, async (req, res) => {
+  try {
+    const { fecha } = req.query;
+    if (!fecha) return res.status(400).json({ ok: false, mensaje: 'Falta la fecha.' });
+    const snap = await col(req.tenantId, 'asistencia_presencia').doc(fecha).get();
+    if (!snap.exists) return res.json({ ok: true, marcas: [], presentes: [], total: 0 });
+    const data    = snap.data();
+    const marcas  = data.marcas || [];
+    const presentes = marcas.filter(m => m.presente === true);
+    res.json({ ok: true, marcas, presentes, total: marcas.length });
+  } catch (e) { err(res, req, e); }
+});
+
 module.exports = router;
