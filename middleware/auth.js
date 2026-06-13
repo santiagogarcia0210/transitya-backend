@@ -1,4 +1,4 @@
-const { auth } = require('../firebase');
+const { auth, db } = require('../firebase');
 
 const verifyToken = async (req, res, next) => {
   const token = req.headers.authorization?.split('Bearer ')[1];
@@ -21,11 +21,25 @@ const verifyToken = async (req, res, next) => {
       superadmin  = superadmin  || claims.superadmin === true || claims.superadmin === 'true';
     }
 
-    console.log('[AUTH]', decoded.uid, '| jwt.sa:', decoded.superadmin, '('+typeof decoded.superadmin+')', '| jwt.tenantId:', decoded.tenantId, '| jwt.rol:', decoded.rol, '| resolved sa:', superadmin, 'tenantId:', tenantId);
 
     // Reject accounts with no tenant unless they are superadmin
     if (!tenantId && !superadmin && rol !== 'superadmin') {
       return res.status(403).json({ ok: false, mensaje: 'Cuenta sin empresa asignada' });
+    }
+
+    // Enforce empresa suspension — superadmin bypasses (no tenantId), admins/choferes no
+    if (tenantId) {
+      const empDoc = await db.collection('empresas').doc(tenantId).get();
+      if (empDoc.exists) {
+        const emp = empDoc.data();
+        if (emp.activo === false || emp.suspendida === true) {
+          return res.status(403).json({
+            ok: false,
+            error: 'empresa_suspendida',
+            mensaje: 'Cuenta suspendida. Contactá a soporte para regularizar tu situación.',
+          });
+        }
+      }
     }
 
     req.user = { uid: decoded.uid, email: decoded.email, tenantId, rol, tipoEmpresa, superadmin };
