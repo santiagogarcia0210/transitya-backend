@@ -19,8 +19,9 @@ const verifyToken = async (req, res, next) => {
       rol         = rol         || claims.rol;
       tipoEmpresa = tipoEmpresa || claims.tipoEmpresa;
       superadmin  = superadmin  || claims.superadmin === true || claims.superadmin === 'true';
-      console.log('[AUTH]', decoded.uid, '| superadmin_jwt:', decoded.superadmin, '| claims.superadmin:', claims.superadmin, '| resolved:', superadmin, '| tenantId:', tenantId);
     }
+
+    console.log('[AUTH]', decoded.uid, '| jwt.sa:', decoded.superadmin, '('+typeof decoded.superadmin+')', '| jwt.tenantId:', decoded.tenantId, '| jwt.rol:', decoded.rol, '| resolved sa:', superadmin, 'tenantId:', tenantId);
 
     // Reject accounts with no tenant unless they are superadmin
     if (!tenantId && !superadmin) {
