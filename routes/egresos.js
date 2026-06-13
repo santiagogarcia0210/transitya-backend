@@ -141,29 +141,70 @@ router.get('/:id', verifyToken, requireModulo('egresos'), async (req, res) => {
   } catch (e) { errHandler(res, req, e); }
 });
 
+const HAIKU  = 'claude-haiku-4-5-20251001';
+const SONNET = 'claude-sonnet-4-6';
+const MIMES_OK = new Set(['image/jpeg','image/png','image/gif','image/webp']);
+const MAX_B64  = 6_000_000; // ~4.5 MB imagen original
+
+const PROMPT_EGRESOS =
+  'Sos un asistente contable. Analizá el comprobante y extraé los datos.\n' +
+  'Respondé ÚNICAMENTE con JSON válido. Sin texto antes ni después. Sin markdown.\n' +
+  'Schema (usá null si no podés leer el valor con certeza):\n' +
+  '{"fecha":"dd/MM/yyyy o null","monto":número positivo o null,"proveedor":"string o null",' +
+  '"cuit":"solo dígitos o null","nroFactura":"string o null",' +
+  '"tipoComprobante":"Factura A|Factura B|Ticket|Remito|Otro|null",' +
+  '"concepto":"string descriptivo o null",' +
+  '"categoria":"Combustible|Repuesto|Mantenimiento|Seguro|Peaje|Limpieza|Otro",' +
+  '"requiere_revision":true si foto ilegible o datos dudosos, false si son claros}';
+
+async function llamarIAEgresos(fotoBase64, mimeType, modelo) {
+  const msg = await anthropic.messages.create({
+    model: modelo, max_tokens: 1024,
+    messages: [{ role: 'user', content: [
+      { type: 'image', source: { type: 'base64', media_type: mimeType, data: fotoBase64 } },
+      { type: 'text', text: PROMPT_EGRESOS },
+    ]}],
+  });
+  const raw = msg.content[0].text;
+  const i = raw.indexOf('{');
+  const j = raw.lastIndexOf('}');
+  if (i === -1 || j === -1) throw new Error('Sin JSON en la respuesta del modelo');
+  return JSON.parse(raw.slice(i, j + 1));
+}
+
 router.post('/escanear', verifyToken, async (req, res) => {
   try {
     const { fotoBase64, mimeType } = req.body;
-    const msg = await anthropic.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 1024,
-      messages: [{
-        role: 'user',
-        content: [
-          {
-            type: 'image',
-            source: { type: 'base64', media_type: mimeType, data: fotoBase64 },
-          },
-          {
-            type: 'text',
-            text: 'Extraé los datos de este comprobante fiscal. Respondé SOLO con JSON válido sin markdown:\n{"fecha":"dd/MM/yyyy","monto":número,"proveedor":"","cuit":"","nroFactura":"","tipoComprobante":"","concepto":"","categoria":""}',
-          },
-        ],
-      }],
-    });
-    const raw   = msg.content[0].text.replace(/```json?|```/g, '').trim();
-    const datos = JSON.parse(raw);
-    res.json({ ok: true, datos });
+    if (!fotoBase64 || !mimeType)
+      return res.status(400).json({ ok: false, mensaje: 'Falta imagen o tipo de archivo.' });
+    if (!MIMES_OK.has(mimeType))
+      return res.status(400).json({ ok: false, mensaje: `Formato no soportado (${mimeType}). Usá JPG o PNG.` });
+    if (fotoBase64.length > MAX_B64)
+      return res.status(400).json({ ok: false, mensaje: 'La imagen es demasiado grande. Tomá la foto con menor resolución.' });
+
+    let datos;
+    try {
+      datos = await llamarIAEgresos(fotoBase64, mimeType, HAIKU);
+    } catch {
+      try { datos = await llamarIAEgresos(fotoBase64, mimeType, SONNET); }
+      catch { return res.status(422).json({ ok: false, mensaje: 'No se pudo leer el comprobante. Intentá con una foto más nítida.' }); }
+    }
+
+    const advertencias = [];
+    const montoNum = Number(datos.monto);
+    if (!datos.monto || isNaN(montoNum) || montoNum <= 0) {
+      advertencias.push('Monto no detectado o inválido');
+      datos.monto = null;
+    } else {
+      datos.monto = montoNum;
+    }
+    if (datos.fecha && !/^\d{2}\/\d{2}\/\d{4}$/.test(String(datos.fecha))) {
+      advertencias.push('Fecha en formato incorrecto');
+      datos.fecha = null;
+    }
+
+    const requiere_revision = datos.requiere_revision === true || advertencias.length > 0;
+    res.json({ ok: true, datos, advertencias, requiere_revision });
   } catch (e) { errHandler(res, req, e); }
 });
 
