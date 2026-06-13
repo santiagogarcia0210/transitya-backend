@@ -1,17 +1,30 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const helmet = require('helmet');
 const app = express();
 
-const ALLOWED_ORIGIN = /transitya\.com$|vercel\.app$|localhost/;
+// Security headers — pure JSON API: CSP desactivado, CORP en cross-origin para que el
+// frontend pueda consumir la API desde otro origen.
+app.use(helmet({
+  contentSecurityPolicy: false,
+  crossOriginEmbedderPolicy: false,
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+}));
+
+// CORS allowlist desde env — separar por comas en Railway: CORS_ORIGINS
+const ALLOWED_ORIGINS = new Set(
+  (process.env.CORS_ORIGINS || 'http://localhost:3000')
+    .split(',').map(s => s.trim()).filter(Boolean)
+);
 app.use(cors({
   origin: (origin, cb) => {
-    // Sin origin (curl / server-to-server) o match del regex → permitir
-    // Pasar el origin string (no true/false) para que funcione con credentials: true
-    cb(null, !origin || ALLOWED_ORIGIN.test(origin) ? origin : false);
+    // Sin origin (curl / server-to-server) → permitir; de lo contrario validar contra la lista.
+    cb(null, !origin || ALLOWED_ORIGINS.has(origin) ? origin : false);
   },
   credentials: true,
 }));
+
 app.use(express.json({ limit: '5mb' }));
 
 // Rutas

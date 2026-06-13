@@ -29,13 +29,17 @@ router.post('/', verifyToken, async (req, res) => {
   } catch (e) { errHandler(res, req, e); }
 });
 
-// Public — GPS nativo sin auth
-router.post('/nativa', async (req, res) => {
+// GPS nativo — requiere token; tenantId y uid provienen del claim, nunca del body
+router.post('/nativa', verifyToken, async (req, res) => {
   try {
-    const { chofer, lat, lng, velocidad, tenantId } = req.body;
-    if (!tenantId || !chofer) return res.status(400).json({ ok: false, mensaje: 'Faltan datos.' });
-    const doc = { chofer, lat, lng, velocidad: velocidad || 0, timestamp: new Date().toISOString() };
-    await db.collection('empresas').doc(tenantId).collection('ubicaciones').doc(chofer).set(doc);
+    const { lat, lng, velocidad } = req.body;
+    const usuario = nombreUsuario(req.user);
+    const doc = {
+      chofer: usuario, lat, lng,
+      velocidad: velocidad || 0,
+      timestamp: new Date().toISOString(),
+    };
+    await col(req.tenantId, 'ubicaciones').doc(req.user.uid).set(doc);
     res.json({ ok: true });
   } catch (e) { errHandler(res, req, e); }
 });

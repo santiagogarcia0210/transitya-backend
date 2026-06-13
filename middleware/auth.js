@@ -8,6 +8,7 @@ const verifyToken = async (req, res, next) => {
     let tenantId    = decoded.tenantId;
     let rol         = decoded.rol;
     let tipoEmpresa = decoded.tipoEmpresa;
+    let superadmin  = decoded.superadmin === true;
 
     // Fallback: stale token or manually-created account may lack custom claims in JWT.
     // Re-fetch from Firebase Auth to get the persisted claims.
@@ -17,9 +18,15 @@ const verifyToken = async (req, res, next) => {
       tenantId    = tenantId    || claims.tenantId;
       rol         = rol         || claims.rol;
       tipoEmpresa = tipoEmpresa || claims.tipoEmpresa;
+      superadmin  = superadmin  || claims.superadmin === true;
     }
 
-    req.user = { uid: decoded.uid, email: decoded.email, tenantId, rol, tipoEmpresa };
+    // Reject accounts with no tenant unless they are superadmin
+    if (!tenantId && !superadmin) {
+      return res.status(403).json({ ok: false, mensaje: 'Cuenta sin empresa asignada' });
+    }
+
+    req.user = { uid: decoded.uid, email: decoded.email, tenantId, rol, tipoEmpresa, superadmin };
     req.tenantId = tenantId;
     next();
   } catch (e) {
