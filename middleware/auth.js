@@ -24,7 +24,7 @@ const verifyToken = async (req, res, next) => {
     console.log('[AUTH]', decoded.uid, '| jwt.sa:', decoded.superadmin, '('+typeof decoded.superadmin+')', '| jwt.tenantId:', decoded.tenantId, '| jwt.rol:', decoded.rol, '| resolved sa:', superadmin, 'tenantId:', tenantId);
 
     // Reject accounts with no tenant unless they are superadmin
-    if (!tenantId && !superadmin) {
+    if (!tenantId && !superadmin && rol !== 'superadmin') {
       return res.status(403).json({ ok: false, mensaje: 'Cuenta sin empresa asignada' });
     }
 

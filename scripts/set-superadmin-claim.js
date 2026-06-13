@@ -9,6 +9,7 @@ async function setSuperAdminClaim() {
   console.log('Usuario encontrado:', user.uid, user.email);
 
   await admin.auth().setCustomUserClaims(user.uid, {
+    superadmin: true,
     rol: 'superadmin',
     tenantId: null,
   });
