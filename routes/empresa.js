@@ -1,6 +1,8 @@
 const router = require('express').Router();
 const { db } = require('../firebase');
-const { verifyToken, requireAdmin } = require('../middleware/auth');
+const { verifyToken, requireAdmin, requireSuperadmin } = require('../middleware/auth');
+const { mpPost } = require('../helpers/mp');
+const { enviarConfirmacionPago } = require('../helpers/mailer');
 
 const empresaRef = (tenantId) => db.collection('empresas').doc(tenantId);
 
@@ -92,6 +94,95 @@ router.get('/suscripcion', verifyToken, requireAdmin, async (req, res) => {
       },
     });
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+// ── MP CHECKOUT — genera preferencia de pago ──────────────────────────────────
+router.post('/checkout', verifyToken, requireAdmin, async (req, res) => {
+  try {
+    const empDoc = await empresaRef(req.tenantId).get();
+    const emp = empDoc.exists ? empDoc.data() : {};
+    const frontUrl = process.env.FRONTEND_URL || 'https://transitya-frontend.vercel.app';
+
+    const preference = await mpPost('/checkout/preferences', {
+      items: [{
+        title: 'Transit·Ya — Plan Pro (mensual)',
+        description: 'Suscripción mensual al plan Pro de Transit·Ya',
+        quantity: 1,
+        unit_price: 89000,
+        currency_id: 'ARS',
+      }],
+      payer: { email: emp.email || req.user.email },
+      external_reference: req.tenantId,
+      back_urls: {
+        success: `${frontUrl}/dashboard?pago=ok`,
+        failure: `${frontUrl}/dashboard?pago=error`,
+        pending: `${frontUrl}/dashboard?pago=pendiente`,
+      },
+      auto_return: 'approved',
+      statement_descriptor: 'TransitYa',
+      metadata: { tenantId: req.tenantId },
+    });
+
+    if (!preference.init_point) {
+      return res.status(502).json({ ok: false, error: 'mp_error', mensaje: preference.message || 'Error al crear preferencia MP' });
+    }
+
+    res.json({ ok: true, init_point: preference.init_point, id: preference.id });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// ── SUPERADMIN: empresas pendientes de confirmar pago ─────────────────────────
+
+router.get('/pendientes-confirmacion', verifyToken, requireSuperadmin, async (req, res) => {
+  try {
+    const snap = await db.collection('empresas')
+      .where('planActivo', '==', false)
+      .get();
+    const ahora = new Date();
+    const pendientes = snap.docs
+      .map(d => ({ id: d.id, ...d.data() }))
+      .filter(e => !e.eliminada && e.trialFin && new Date(e.trialFin) >= ahora)
+      .map(e => ({
+        id:            e.id,
+        nombre:        e.nombre || e.id,
+        adminEmail:    e.email || '',
+        fechaRegistro: e.creadoEn || '',
+        diasRestantes: Math.max(0, Math.ceil((new Date(e.trialFin) - ahora) / 86400000)),
+      }));
+    pendientes.sort((a, b) => a.diasRestantes - b.diasRestantes);
+    res.json({ ok: true, pendientes });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// ── SUPERADMIN: confirmar pago manual ────────────────────────────────────────
+
+router.post('/:id/confirmar-pago', verifyToken, requireSuperadmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const empRef = db.collection('empresas').doc(id);
+    const empDoc = await empRef.get();
+    if (!empDoc.exists) return res.status(404).json({ ok: false, mensaje: 'Empresa no encontrada.' });
+
+    const { nombre, email } = empDoc.data();
+    const ahora = new Date().toISOString();
+
+    await empRef.update({
+      planActivo:           true,
+      fechaPagoConfirmado:  ahora,
+      trialFin:             new Date(Date.now() + 365 * 86400000).toISOString(),
+    });
+
+    res.json({ ok: true, mensaje: 'Plan activado.' });
+
+    enviarConfirmacionPago({ email, nombreEmpresa: nombre })
+      .catch(err => console.error('Email fallo', { template: 'confirmacion-pago', destinatario: email, error: err.message }));
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
 });
 
 module.exports = router;

@@ -27,7 +27,7 @@ const verifyToken = async (req, res, next) => {
       return res.status(403).json({ ok: false, mensaje: 'Cuenta sin empresa asignada' });
     }
 
-    // Enforce empresa suspension — superadmin bypasses (no tenantId), admins/choferes no
+    // Enforce empresa suspension + trial expiry — superadmin bypasses (no tenantId)
     if (tenantId) {
       const empDoc = await db.collection('empresas').doc(tenantId).get();
       if (empDoc.exists) {
@@ -38,6 +38,17 @@ const verifyToken = async (req, res, next) => {
             error: 'empresa_suspendida',
             mensaje: 'Cuenta suspendida. Contactá a soporte para regularizar tu situación.',
           });
+        }
+        // Soft-block mutations when trial expired and no active plan
+        if (emp.planActivo === false && emp.trialFin && new Date(emp.trialFin) < new Date()) {
+          const method = req.method?.toUpperCase();
+          if (method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'DELETE') {
+            return res.status(402).json({
+              ok: false,
+              error: 'prueba_vencida',
+              mensaje: 'Tu período de prueba venció. Activá tu suscripción para continuar.',
+            });
+          }
         }
       }
     }
@@ -56,6 +67,12 @@ const requireAdmin = (req, res, next) => {
   next();
 };
 
+const requireSuperadmin = (req, res, next) => {
+  if (!req.user.superadmin)
+    return res.status(403).json({ ok: false, mensaje: 'Acceso restringido a superadmin.' });
+  next();
+};
+
 const requireModulo = (modulo) => (req, res, next) => {
   const permitidos = ['egresos', 'reportes'];
   if (req.user.rol === 'admin' || req.user.rol === 'administrador') return next();
@@ -64,4 +81,4 @@ const requireModulo = (modulo) => (req, res, next) => {
   next();
 };
 
-module.exports = { verifyToken, requireAdmin, requireModulo };
+module.exports = { verifyToken, requireAdmin, requireModulo, requireSuperadmin };

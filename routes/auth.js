@@ -2,6 +2,7 @@ const router = require('express').Router();
 const { db, admin } = require('../firebase');
 const { verifyToken } = require('../middleware/auth');
 const { col } = require('../utils');
+const { enviarBienvenida, enviarNotificacionInterna } = require('../helpers/mailer');
 
 // Genera tenantId URL-safe a partir del nombre de la empresa
 const toTenantId = (nombre) => {
@@ -46,15 +47,18 @@ router.post('/registro', async (req, res) => {
     });
 
     const ahora = new Date().toISOString();
+    const trialFin = new Date(Date.now() + 15 * 86400000).toISOString();
 
     // Crear doc de empresa
     await db.collection('empresas').doc(tenantId).set({
-      nombre:    nombreEmpresa,
-      tipo:      tipoFinal,
+      nombre:      nombreEmpresa,
+      tipo:        tipoFinal,
       email,
-      telefono:  telefono || '',
-      activo:    true,
-      creadoEn:  ahora,
+      telefono:    telefono || '',
+      activo:      true,
+      creadoEn:    ahora,
+      planActivo:  false,
+      trialFin,
     });
 
     // Crear doc del admin dentro de la empresa
@@ -69,6 +73,10 @@ router.post('/registro', async (req, res) => {
     });
 
     res.status(201).json({ ok: true, uid: userRecord.uid, tenantId, tipo: tipoFinal });
+
+    // Fire-and-forget emails (no bloquea la respuesta al cliente)
+    enviarBienvenida({ email, nombreEmpresa, tipo: tipoFinal }).catch(() => {});
+    enviarNotificacionInterna({ email, nombreEmpresa, tipo: tipoFinal, tenantId }).catch(() => {});
   } catch (e) {
     // Firebase devuelve códigos de error descriptivos
     if (e.code === 'auth/email-already-exists')
