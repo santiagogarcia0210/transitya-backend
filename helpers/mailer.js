@@ -9,16 +9,19 @@ console.log('[MAILER] config', {
   superadmin: process.env.SUPERADMIN_EMAIL,
 });
 
-const port = Number(process.env.FEROZO_PORT) || 465;
+const port = Number(process.env.FEROZO_PORT) || 587;
 
 const transporter = nodemailer.createTransport({
-  host:   process.env.FEROZO_HOST || 'a0130335.ferozo.com',
+  host:             process.env.FEROZO_HOST || 'a0130335.ferozo.com',
   port,
-  secure: port === 465,
+  secure:           port === 465,
+  requireTLS:       port !== 465,
   auth: {
     user: process.env.FEROZO_USER,
     pass: process.env.FEROZO_PASS,
   },
+  connectionTimeout: 10000,
+  greetingTimeout:   10000,
 });
 
 transporter.verify()
