@@ -1,22 +1,37 @@
 const nodemailer = require('nodemailer');
 
+console.log('[MAILER] config', {
+  host:       process.env.FEROZO_HOST,
+  port:       process.env.FEROZO_PORT,
+  user:       process.env.FEROZO_USER,
+  passSet:    !!process.env.FEROZO_PASS,
+  from:       process.env.FEROZO_FROM,
+  superadmin: process.env.SUPERADMIN_EMAIL,
+});
+
+const port = Number(process.env.FEROZO_PORT) || 465;
+
 const transporter = nodemailer.createTransport({
-  host: process.env.FEROZO_HOST || 'a0130335.ferozo.com',
-  port: Number(process.env.FEROZO_PORT) || 465,
-  secure: true,
+  host:   process.env.FEROZO_HOST || 'a0130335.ferozo.com',
+  port,
+  secure: port === 465,
   auth: {
     user: process.env.FEROZO_USER,
     pass: process.env.FEROZO_PASS,
   },
 });
 
-const FROM = `"Transit·Ya" <${process.env.FEROZO_USER || 'info@transitya.com'}>`;
-const ADMIN = 'info@transitya.com';
+transporter.verify()
+  .then(() => console.log('[MAILER] SMTP OK'))
+  .catch(err => console.error('[MAILER] SMTP FALLO', err.message));
+
+const FROM  = `"Transit·Ya" <${process.env.FEROZO_FROM || process.env.FEROZO_USER || 'info@transitya.com'}>`;
+const ADMIN = process.env.SUPERADMIN_EMAIL || 'info@transitya.com';
 
 async function enviarBienvenida({ email, nombreEmpresa, tipo }) {
   await transporter.sendMail({
-    from: FROM,
-    to: email,
+    from:    FROM,
+    to:      email,
     subject: '¡Bienvenido a Transit·Ya! Tu cuenta está lista 🚌',
     html: `
       <div style="font-family:sans-serif;max-width:560px;margin:0 auto;color:#1e293b">
@@ -46,8 +61,8 @@ async function enviarBienvenida({ email, nombreEmpresa, tipo }) {
 async function enviarNotificacionInterna({ email, nombreEmpresa, tipo, tenantId }) {
   const ahora = new Date().toLocaleString('es-AR', { timeZone: 'America/Argentina/Tucuman' });
   await transporter.sendMail({
-    from: FROM,
-    to: ADMIN,
+    from:    FROM,
+    to:      ADMIN,
     subject: `🆕 Nueva empresa: ${nombreEmpresa}`,
     html: `
       <div style="font-family:sans-serif;max-width:480px;color:#1e293b">
@@ -66,8 +81,8 @@ async function enviarNotificacionInterna({ email, nombreEmpresa, tipo, tenantId 
 
 async function enviarConfirmacionPago({ email, nombreEmpresa }) {
   await transporter.sendMail({
-    from: FROM,
-    to: email,
+    from:    FROM,
+    to:      email,
     subject: 'Transit·Ya — Tu pago fue confirmado, plan activo',
     html: `
       <div style="font-family:sans-serif;max-width:560px;margin:0 auto;color:#1e293b">

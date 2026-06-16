@@ -179,7 +179,7 @@ router.post('/:id/confirmar-pago', verifyToken, requireSuperadmin, async (req, r
     res.json({ ok: true, mensaje: 'Plan activado.' });
 
     enviarConfirmacionPago({ email, nombreEmpresa: nombre })
-      .catch(err => console.error('Email fallo', { template: 'confirmacion-pago', destinatario: email, error: err.message }));
+      .catch(err => console.error('[MAILER] fallo envío', { template: 'confirmacion-pago', to: email, error: err.message }));
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }

@@ -75,8 +75,10 @@ router.post('/registro', async (req, res) => {
     res.status(201).json({ ok: true, uid: userRecord.uid, tenantId, tipo: tipoFinal });
 
     // Fire-and-forget emails (no bloquea la respuesta al cliente)
-    enviarBienvenida({ email, nombreEmpresa, tipo: tipoFinal }).catch(() => {});
-    enviarNotificacionInterna({ email, nombreEmpresa, tipo: tipoFinal, tenantId }).catch(() => {});
+    enviarBienvenida({ email, nombreEmpresa, tipo: tipoFinal })
+      .catch(err => console.error('[MAILER] fallo envío', { template: 'bienvenida', to: email, error: err.message }));
+    enviarNotificacionInterna({ email, nombreEmpresa, tipo: tipoFinal, tenantId })
+      .catch(err => console.error('[MAILER] fallo envío', { template: 'notificacion-interna', to: process.env.SUPERADMIN_EMAIL || 'info@transitya.com', error: err.message }));
   } catch (e) {
     // Firebase devuelve códigos de error descriptivos
     if (e.code === 'auth/email-already-exists')
