@@ -14,18 +14,26 @@ const errHandler = (res, req, e) => {
 async function procesarComprobante(data, tenantId, id) {
   const raw = data.comprobante;
   if (!raw || !String(raw).startsWith('data:')) return;
+
+  const matches = String(raw).match(/^data:([^;]+);base64,(.+)$/);
+  if (!matches) {
+    delete data.comprobante;
+    return;
+  }
+
+  const mimeType = matches[1];
+  const base64   = matches[2];
+  const ext      = mimeType.split('/')[1] || 'jpg';
+  const ruta     = `empresas/${tenantId}/egresos/${id}/comprobante.${ext}`;
+
   try {
-    const matches = String(raw).match(/^data:([^;]+);base64,(.+)$/);
-    if (!matches) return;
-    const mimeType = matches[1];
-    const base64   = matches[2];
-    const ext      = mimeType.split('/')[1] || 'jpg';
-    const ruta     = `empresas/${tenantId}/egresos/${id}/comprobante.${ext}`;
     const url      = await subirFoto(base64, mimeType, ruta);
     data.comprobanteUrl = url;
     data.comprobante    = url;
   } catch (e) {
     console.error('[EGRESOS] Storage upload error:', e.message);
+    delete data.comprobante;
+    throw new Error('No se pudo subir el comprobante. Intentá de nuevo en unos segundos.');
   }
 }
 
