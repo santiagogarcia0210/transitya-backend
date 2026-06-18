@@ -68,7 +68,10 @@ router.get('/empresas', async (req, res) => {
         fechaRegistro: toISO(emp.creadoEn || emp._createdAt),
         plan: susc.plan || 'prueba', estadoSusc: susc.estado || 'prueba',
         fechaProximoCobro: toISO(susc.fechaProximoCobro),
-        choferesActivos, maxChoferes: susc.choferesIncluidos || 2,
+        choferesActivos,
+      maxChoferes: susc.choferesIncluidos != null && susc.choferesIncluidos > 0
+        ? susc.choferesIncluidos
+        : susc.plan === 'flota' ? null : 2,
         activo: emp.activo !== false, suspendida: emp.suspendida === true
       };
     }));
