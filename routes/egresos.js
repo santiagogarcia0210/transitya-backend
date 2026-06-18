@@ -154,23 +154,29 @@ const SONNET = 'claude-sonnet-4-6';
 const MIMES_OK = new Set(['image/jpeg','image/png','image/gif','image/webp']);
 const MAX_B64  = 6_000_000; // ~4.5 MB imagen original
 
-const PROMPT_EGRESOS =
-  'Sos un asistente contable. Analizá el comprobante y extraé los datos.\n' +
-  'Respondé ÚNICAMENTE con JSON válido. Sin texto antes ni después. Sin markdown.\n' +
-  'Schema (usá null si no podés leer el valor con certeza):\n' +
-  '{"fecha":"dd/MM/yyyy o null","monto":número positivo o null,"proveedor":"string o null",' +
-  '"cuit":"solo dígitos o null","nroFactura":"string o null",' +
-  '"tipoComprobante":"Factura A|Factura B|Ticket|Remito|Otro|null",' +
-  '"concepto":"string descriptivo o null",' +
-  '"categoria":"Combustible|Repuesto|Mantenimiento|Seguro|Peaje|Limpieza|Otro",' +
-  '"requiere_revision":true si foto ilegible o datos dudosos, false si son claros}';
+function buildPromptEgresos() {
+  const anioActual = new Date().getFullYear();
+  return (
+    'Sos un asistente contable argentino. Analizá el comprobante y extraé los datos.\n' +
+    `Hoy estamos en el año ${anioActual}. Los comprobantes son documentos recientes, normalmente del mismo mes o del mes anterior.\n` +
+    `Si el año aparece con 2 dígitos (ej "25"), expandilo al siglo actual (→ "${anioActual}"), NUNCA a 1900s o 2000s tempranos.\n` +
+    'Respondé ÚNICAMENTE con JSON válido. Sin texto antes ni después. Sin markdown.\n' +
+    'Schema (usá null si no podés leer el valor con certeza):\n' +
+    '{"fecha":"dd/MM/yyyy o null","monto":número positivo o null,"proveedor":"string o null",' +
+    '"cuit":"solo dígitos o null","nroFactura":"string o null",' +
+    '"tipoComprobante":"Factura A|Factura B|Ticket|Remito|Otro|null",' +
+    '"concepto":"string descriptivo o null",' +
+    '"categoria":"Combustible|Repuesto|Mantenimiento|Seguro|Peaje|Limpieza|Otro",' +
+    '"requiere_revision":true si foto ilegible o datos dudosos, false si son claros}'
+  );
+}
 
 async function llamarIAEgresos(fotoBase64, mimeType, modelo) {
   const msg = await anthropic.messages.create({
     model: modelo, max_tokens: 1024,
     messages: [{ role: 'user', content: [
       { type: 'image', source: { type: 'base64', media_type: mimeType, data: fotoBase64 } },
-      { type: 'text', text: PROMPT_EGRESOS },
+      { type: 'text', text: buildPromptEgresos() },
     ]}],
   });
   const raw = msg.content[0].text;
@@ -209,6 +215,12 @@ router.post('/escanear', verifyToken, async (req, res) => {
     if (datos.fecha && !/^\d{2}\/\d{2}\/\d{4}$/.test(String(datos.fecha))) {
       advertencias.push('Fecha en formato incorrecto');
       datos.fecha = null;
+    } else if (datos.fecha) {
+      const anioActual = new Date().getFullYear();
+      const anio = parseInt(String(datos.fecha).split('/')[2]);
+      if (anio < anioActual - 2 || anio > anioActual + 1) {
+        advertencias.push(`Año ${anio} inverosímil — verificá la fecha`);
+      }
     }
 
     const requiere_revision = datos.requiere_revision === true || advertencias.length > 0;

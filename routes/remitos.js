@@ -93,21 +93,27 @@ const SONNET   = 'claude-sonnet-4-6';
 const MIMES_OK = new Set(['image/jpeg','image/png','image/gif','image/webp']);
 const MAX_B64  = 6_000_000;
 
-const PROMPT_REMITOS =
-  'Sos un asistente contable. Analizá este remito de combustible y extraé los datos.\n' +
-  'Respondé ÚNICAMENTE con JSON válido. Sin texto antes ni después. Sin markdown.\n' +
-  'Schema (usá null si no podés leer el valor con certeza):\n' +
-  '{"nroRemito":"string o null","razonSocial":"string o null","cuit":"solo dígitos o null",' +
-  '"fecha":"dd/MM/yyyy o null","combustible":número positivo o null,"monto":número positivo o null,' +
-  '"tipoCombustible":"Nafta Super|Nafta Premium|Diesel|Gasoil|GNC|Otro|null",' +
-  '"requiere_revision":true si foto ilegible o datos dudosos, false si son claros}';
+function buildPromptRemitos() {
+  const anioActual = new Date().getFullYear();
+  return (
+    'Sos un asistente contable argentino. Analizá este remito de combustible y extraé los datos.\n' +
+    `Hoy estamos en el año ${anioActual}. Los comprobantes son documentos recientes, normalmente del mismo mes o del mes anterior.\n` +
+    `Si el año aparece con 2 dígitos (ej "25"), expandilo al siglo actual (→ "${anioActual}"), NUNCA a 1900s o 2000s tempranos.\n` +
+    'Respondé ÚNICAMENTE con JSON válido. Sin texto antes ni después. Sin markdown.\n' +
+    'Schema (usá null si no podés leer el valor con certeza):\n' +
+    '{"nroRemito":"string o null","razonSocial":"string o null","cuit":"solo dígitos o null",' +
+    '"fecha":"dd/MM/yyyy o null","combustible":número positivo o null,"monto":número positivo o null,' +
+    '"tipoCombustible":"Nafta Super|Nafta Premium|Diesel|Gasoil|GNC|Otro|null",' +
+    '"requiere_revision":true si foto ilegible o datos dudosos, false si son claros}'
+  );
+}
 
 async function llamarIARemitos(fotoBase64, mimeType, modelo) {
   const msg = await anthropic.messages.create({
     model: modelo, max_tokens: 1024,
     messages: [{ role: 'user', content: [
       { type: 'image', source: { type: 'base64', media_type: mimeType, data: fotoBase64 } },
-      { type: 'text', text: PROMPT_REMITOS },
+      { type: 'text', text: buildPromptRemitos() },
     ]}],
   });
   const raw = msg.content[0].text;
@@ -155,6 +161,12 @@ router.post('/escanear', verifyToken, async (req, res) => {
     if (datos.fecha && !/^\d{2}\/\d{2}\/\d{4}$/.test(String(datos.fecha))) {
       advertencias.push('Fecha en formato incorrecto');
       datos.fecha = null;
+    } else if (datos.fecha) {
+      const anioActual = new Date().getFullYear();
+      const anio = parseInt(String(datos.fecha).split('/')[2]);
+      if (anio < anioActual - 2 || anio > anioActual + 1) {
+        advertencias.push(`Año ${anio} inverosímil — verificá la fecha`);
+      }
     }
 
     const requiere_revision = datos.requiere_revision === true || advertencias.length > 0;
