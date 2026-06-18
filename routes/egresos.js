@@ -211,8 +211,14 @@ router.post('/escanear', verifyToken, async (req, res) => {
 router.post('/', verifyToken, requireModulo('egresos'), async (req, res) => {
   try {
     const data = { ...req.body };
-    data.chofer  = req.user.email;
-    data.CHOFER  = req.user.email;
+    const isAdmin = req.user.rol === 'admin' || req.user.rol === 'administrador';
+    // Choferes: siempre auto-asignados. Admins: respetar el chofer elegido; fallback a su email si no enviaron ninguno.
+    if (!isAdmin || !data.chofer) {
+      data.chofer = req.user.email;
+      data.CHOFER = req.user.email;
+    } else {
+      data.CHOFER = data.chofer;
+    }
     const id = String(data.ID || data.id || '').trim() || randomUUID();
     data.ID = id;
     await procesarComprobante(data, req.tenantId, id);
