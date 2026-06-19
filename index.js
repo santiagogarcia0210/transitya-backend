@@ -52,7 +52,8 @@ app.use('/api/planillas',          require('./routes/planillas'));
 app.use('/api/cambio-transporte',  require('./routes/cambio-transporte'));
 app.use('/api/altas-pres',         require('./routes/altas-pres'));
 app.use('/api/presentacion-docs',  require('./routes/presentacion-docs'));
-app.use('/api/geo', require('./routes/geocodificacion'));
+app.use('/api/geo',  require('./routes/geocodificacion'));
+app.use('/api/arca', require('./routes/arca-config'));
 
 app.get('/health', (req, res) => res.json({ ok: true, version: '1.0.0' }));
 
