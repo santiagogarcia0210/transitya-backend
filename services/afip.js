@@ -38,12 +38,15 @@ async function conectarCuentaArca({ cuit, claveFiscal, alias, ambiente }) {
     access_token: ACCESS_TOKEN,
   });
 
-  console.log('[ARCA] CreateAutomation params:', {
-    automation: automationName,
-    cuit:       String(cuit),
-    username:   String(cuit),
-    password:   claveFiscal ? '***' : 'VACÍO',
-    alias,
+  console.log('[ARCA] CreateAutomation params - individual:', {
+    automation:      automationName,
+    cuit:            String(cuit),
+    cuit_typeof:     typeof String(cuit),
+    cuit_length:     String(cuit).length,
+    username:        String(cuit),
+    password_length: claveFiscal?.length || 0,
+    alias:           alias,
+    alias_length:    alias.length,
   });
 
   let result;
