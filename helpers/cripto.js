@@ -1,6 +1,6 @@
 const { createCipheriv, createDecipheriv, randomBytes } = require('crypto');
 
-const keyBuf = Buffer.from(process.env.ENCRYPTION_KEY || '', 'utf8');
+const keyBuf = Buffer.from(process.env.ENCRYPTION_KEY || '', 'hex');
 if (keyBuf.length !== 32) {
   throw new Error(
     '[cripto] ENCRYPTION_KEY debe tener exactamente 32 bytes. ' +
