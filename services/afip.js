@@ -32,7 +32,7 @@ async function conectarCuentaArca({ cuit, claveFiscal, alias, ambiente }) {
   const produccion    = ambiente === 'produccion';
   const automationName = produccion ? 'create-cert-prod' : 'create-cert-dev';
 
-  const cuitNumber = Number(cuit);
+  const cuitNumber = Number(String(cuit).replace(/-/g, ''));
   console.log('[ARCA] CUIT conversion:', {
     cuit_original: cuit,
     cuit_type:     typeof cuit,
