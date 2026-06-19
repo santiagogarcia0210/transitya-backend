@@ -111,7 +111,12 @@ async function autorizarWebService({ cuit, claveFiscal, alias, ambiente }) {
       return result?.data;
     } catch (err) {
       ultimoError = err;
-      console.warn(`[ARCA] autorizarWebService intento ${intento}/${MAX_REINTENTOS} falló:`, err.message);
+      console.error(`[ARCA] autorizarWebService intento ${intento}/${MAX_REINTENTOS} FULL ERROR:`, JSON.stringify({
+        status:       err.status,
+        statusText:   err.statusText,
+        message:      err.message,
+        responseData: err.data,
+      }, null, 2));
       if (intento < MAX_REINTENTOS) {
         await sleep(DELAY_REINTENTO_MS);
       }
