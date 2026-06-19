@@ -66,12 +66,12 @@ async function conectarCuentaArca({ cuit, claveFiscal, alias, ambiente }) {
       alias,
     });
   } catch (err) {
-    console.log('[ARCA] CreateAutomation error:', {
-      status:     err.status,
-      statusText: err.statusText,
-      message:    err.message,
-      errorData:  err.data,
-    });
+    console.error('[ARCA] CreateAutomation FULL ERROR:', JSON.stringify({
+      status:       err.status,
+      statusText:   err.statusText,
+      message:      err.message,
+      responseData: err.data,
+    }, null, 2));
     throw err;
   }
 
