@@ -38,12 +38,12 @@ async function conectarCuentaArca({ cuit, claveFiscal, alias, ambiente }) {
     access_token: ACCESS_TOKEN,
   });
 
-  console.log('[ARCA] conectarCuentaArca params:', {
-    cuit,
-    claveFiscal: claveFiscal ? '***' : 'VACÍO',
-    alias,
-    ambiente,
+  console.log('[ARCA] CreateAutomation params:', {
     automation: automationName,
+    tax_id:     String(cuit),
+    username:   String(cuit),
+    password:   claveFiscal ? '***' : 'VACÍO',
+    alias,
   });
 
   let result;
@@ -54,9 +54,14 @@ async function conectarCuentaArca({ cuit, claveFiscal, alias, ambiente }) {
       password: claveFiscal,
       alias,
     });
-  } catch (error) {
-    console.log('[ARCA] CreateAutomation error response:', error.data ?? error.message);
-    throw error;
+  } catch (err) {
+    console.log('[ARCA] CreateAutomation error:', {
+      status:     err.status,
+      statusText: err.statusText,
+      message:    err.message,
+      errorData:  err.data,
+    });
+    throw err;
   }
 
   console.log('[ARCA] CreateAutomation result status:', result?.status);
