@@ -13,6 +13,7 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@afipsdk/afip.js": "^1.2.3",
     "@anthropic-ai/sdk": "^0.100.1",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
