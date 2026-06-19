@@ -103,10 +103,10 @@ async function autorizarWebService({ cuit, claveFiscal, alias, ambiente }) {
     try {
       const result = await afip.CreateAutomation(automationName, {
         cuit:     cuitNumber,   // número
-        username: cuitLimpio,   // string ← fix
+        username: cuitLimpio,   // string
         password: claveFiscal,
-        alias:    aliasLimpio,  // alfanumérico puro ← fix
-        wsid:     'wsfe',
+        alias:    aliasLimpio,  // alfanumérico puro
+        service:  'wsfe',       // web service a autorizar
       });
       return result?.data;
     } catch (err) {
