@@ -32,8 +32,16 @@ async function conectarCuentaArca({ cuit, claveFiscal, alias, ambiente }) {
   const produccion    = ambiente === 'produccion';
   const automationName = produccion ? 'create-cert-prod' : 'create-cert-dev';
 
+  const cuitNumber = Number(cuit);
+  console.log('[ARCA] CUIT conversion:', {
+    cuit_original: cuit,
+    cuit_type:     typeof cuit,
+    cuit_number:   cuitNumber,
+    isNaN:         isNaN(cuitNumber),
+  });
+
   const afip = new Afip({
-    CUIT:         Number(cuit),
+    CUIT:         cuitNumber,
     production:   produccion,
     access_token: ACCESS_TOKEN,
   });
