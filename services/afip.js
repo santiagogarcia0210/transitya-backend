@@ -28,6 +28,7 @@ function crearInstanciaAfip({ cuit, cert, key, produccion = false }) {
  * La claveFiscal NO se persiste en ningún lado.
  */
 async function conectarCuentaArca({ cuit, claveFiscal, alias, ambiente }) {
+  console.log('[ARCA] conectarCuentaArca called with:', { cuit, claveFiscal: claveFiscal ? '***' : 'VACÍO', alias, ambiente });
   const produccion    = ambiente === 'produccion';
   const automationName = produccion ? 'create-cert-prod' : 'create-cert-dev';
 
@@ -74,6 +75,7 @@ async function conectarCuentaArca({ cuit, claveFiscal, alias, ambiente }) {
  * Reintenta hasta 3 veces con backoff porque ARCA puede tardar en propagar el cert.
  */
 async function autorizarWebService({ cuit, claveFiscal, alias, ambiente }) {
+  console.log('[ARCA] autorizarWebService called with:', { cuit, claveFiscal: claveFiscal ? '***' : 'VACÍO', alias, ambiente });
   const produccion     = ambiente === 'produccion';
   const automationName = produccion ? 'auth-web-service-prod' : 'auth-web-service-dev';
 
