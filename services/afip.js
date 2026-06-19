@@ -37,15 +37,32 @@ async function conectarCuentaArca({ cuit, claveFiscal, alias, ambiente }) {
     access_token: ACCESS_TOKEN,
   });
 
-  const result = await afip.CreateAutomation(automationName, {
-    tax_id:   String(cuit),
-    username: String(cuit),
-    password: claveFiscal,
+  console.log('[ARCA] conectarCuentaArca params:', {
+    cuit,
+    claveFiscal: claveFiscal ? '***' : 'VACÍO',
     alias,
+    ambiente,
+    automation: automationName,
   });
+
+  let result;
+  try {
+    result = await afip.CreateAutomation(automationName, {
+      tax_id:   String(cuit),
+      username: String(cuit),
+      password: claveFiscal,
+      alias,
+    });
+  } catch (error) {
+    console.log('[ARCA] CreateAutomation error response:', error.data ?? error.message);
+    throw error;
+  }
+
+  console.log('[ARCA] CreateAutomation result status:', result?.status);
 
   const data = result?.data;
   if (!data?.cert || !data?.key) {
+    console.log('[ARCA] result completo:', JSON.stringify(result));
     throw new Error('AfipSDK no devolvió cert/key. Verificá el acceso a la cuenta fiscal.');
   }
 
