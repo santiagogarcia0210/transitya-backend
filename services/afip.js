@@ -60,8 +60,8 @@ async function conectarCuentaArca({ cuit, claveFiscal, alias, ambiente }) {
   let result;
   try {
     result = await afip.CreateAutomation(automationName, {
-      cuit:     String(cuit),
-      username: String(cuit),
+      cuit:     cuitNumber,
+      username: cuitNumber,
       password: claveFiscal,
       alias,
     });
