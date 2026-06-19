@@ -28,16 +28,15 @@ function crearInstanciaAfip({ cuit, cert, key, produccion = false }) {
  * La claveFiscal NO se persiste en ningún lado.
  */
 async function conectarCuentaArca({ cuit, claveFiscal, alias, ambiente }) {
-  console.log('[ARCA] conectarCuentaArca called with:', { cuit, claveFiscal: claveFiscal ? '***' : 'VACÍO', alias, ambiente });
-  const produccion    = ambiente === 'produccion';
+  const produccion     = ambiente === 'produccion';
   const automationName = produccion ? 'create-cert-prod' : 'create-cert-dev';
+  const cuitLimpio     = String(cuit).replace(/-/g, '');          // STRING sin guiones → username
+  const cuitNumber     = Number(cuitLimpio);                       // NUMBER → CUIT constructor
+  const aliasLimpio    = alias.replace(/[^a-zA-Z0-9]/g, '');      // alfanumérico puro → alias
 
-  const cuitNumber = Number(String(cuit).replace(/-/g, ''));
-  console.log('[ARCA] CUIT conversion:', {
-    cuit_original: cuit,
-    cuit_type:     typeof cuit,
-    cuit_number:   cuitNumber,
-    isNaN:         isNaN(cuitNumber),
+  console.log('[ARCA] conectarCuentaArca params:', {
+    automationName, cuitLimpio, cuitNumber, aliasLimpio,
+    password_length: claveFiscal?.length || 0,
   });
 
   const afip = new Afip({
@@ -46,24 +45,13 @@ async function conectarCuentaArca({ cuit, claveFiscal, alias, ambiente }) {
     access_token: ACCESS_TOKEN,
   });
 
-  console.log('[ARCA] CreateAutomation params - individual:', {
-    automation:      automationName,
-    cuit:            String(cuit),
-    cuit_typeof:     typeof String(cuit),
-    cuit_length:     String(cuit).length,
-    username:        String(cuit),
-    password_length: claveFiscal?.length || 0,
-    alias:           alias,
-    alias_length:    alias.length,
-  });
-
   let result;
   try {
     result = await afip.CreateAutomation(automationName, {
-      cuit:     cuitNumber,
-      username: cuitNumber,
+      cuit:     cuitNumber,    // número
+      username: cuitLimpio,    // string ← fix
       password: claveFiscal,
-      alias,
+      alias:    aliasLimpio,   // alfanumérico puro ← fix
     });
   } catch (err) {
     console.error('[ARCA] CreateAutomation FULL ERROR:', JSON.stringify({
@@ -91,12 +79,18 @@ async function conectarCuentaArca({ cuit, claveFiscal, alias, ambiente }) {
  * Reintenta hasta 3 veces con backoff porque ARCA puede tardar en propagar el cert.
  */
 async function autorizarWebService({ cuit, claveFiscal, alias, ambiente }) {
-  console.log('[ARCA] autorizarWebService called with:', { cuit, claveFiscal: claveFiscal ? '***' : 'VACÍO', alias, ambiente });
   const produccion     = ambiente === 'produccion';
   const automationName = produccion ? 'auth-web-service-prod' : 'auth-web-service-dev';
+  const cuitLimpio     = String(cuit).replace(/-/g, '');     // STRING sin guiones → username
+  const cuitNumber     = Number(cuitLimpio);                  // NUMBER → CUIT constructor
+  const aliasLimpio    = alias.replace(/[^a-zA-Z0-9]/g, ''); // alfanumérico puro → alias
+
+  console.log('[ARCA] autorizarWebService params:', {
+    automationName, cuitLimpio, cuitNumber, aliasLimpio,
+  });
 
   const afip = new Afip({
-    CUIT:         Number(cuit),
+    CUIT:         cuitNumber,
     production:   produccion,
     access_token: ACCESS_TOKEN,
   });
@@ -108,10 +102,10 @@ async function autorizarWebService({ cuit, claveFiscal, alias, ambiente }) {
   for (let intento = 1; intento <= MAX_REINTENTOS; intento++) {
     try {
       const result = await afip.CreateAutomation(automationName, {
-        tax_id:   String(cuit),
-        username: String(cuit),
+        cuit:     cuitNumber,   // número
+        username: cuitLimpio,   // string ← fix
         password: claveFiscal,
-        alias,
+        alias:    aliasLimpio,  // alfanumérico puro ← fix
         wsid:     'wsfe',
       });
       return result?.data;
