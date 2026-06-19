@@ -40,7 +40,7 @@ async function conectarCuentaArca({ cuit, claveFiscal, alias, ambiente }) {
 
   console.log('[ARCA] CreateAutomation params:', {
     automation: automationName,
-    tax_id:     String(cuit),
+    cuit:       String(cuit),
     username:   String(cuit),
     password:   claveFiscal ? '***' : 'VACÍO',
     alias,
@@ -49,7 +49,7 @@ async function conectarCuentaArca({ cuit, claveFiscal, alias, ambiente }) {
   let result;
   try {
     result = await afip.CreateAutomation(automationName, {
-      tax_id:   String(cuit),
+      cuit:     String(cuit),
       username: String(cuit),
       password: claveFiscal,
       alias,
