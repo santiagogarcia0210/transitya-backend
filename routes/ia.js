@@ -158,4 +158,53 @@ router.post('/ordenar-paradas', auth, async (req, res) => {
   }
 });
 
+// ── Escanear odómetro con IA (Claude Haiku) ───────────────────────────────────
+// Body: { fotoBase64: string, tipo: 'inicio' | 'fin' }
+// Response: { ok: true, km: number }
+router.post('/escanear-odometro', auth, async (req, res) => {
+  try {
+    const { fotoBase64, tipo = 'inicio' } = req.body;
+    if (!fotoBase64) return res.status(400).json({ ok: false, mensaje: 'Falta la imagen en base64.' });
+
+    const b64 = fotoBase64.includes(',') ? fotoBase64.split(',')[1] : fotoBase64;
+
+    const label = tipo === 'fin' ? 'final' : 'inicial';
+    const prompt =
+      `Sos un experto en lectura de odómetros de vehículos.\n` +
+      `Analizá esta imagen del odómetro (lectura de KM ${label}) y extraé el número de kilómetros que muestra.\n` +
+      `Respondé ÚNICAMENTE con un objeto JSON válido, sin explicaciones, sin markdown, sin backticks.\n\n` +
+      `Formato de respuesta: {"km": número_entero}\n\n` +
+      `Reglas:\n` +
+      `- km debe ser un número entero sin puntos ni comas\n` +
+      `- Si no podés leer el odómetro con certeza, devolvé {"km": null}\n` +
+      `- Solo el JSON, nada más.`;
+
+    const msg = await anthropic.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 100,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: b64 } },
+          { type: 'text', text: prompt }
+        ]
+      }]
+    });
+
+    const raw = msg.content[0].text.trim()
+      .replace(/^```json\s*/i, '').replace(/^```\s*/, '').replace(/\s*```$/, '').trim();
+    const jsonMatch = raw.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) return res.json({ ok: false, mensaje: 'No se pudo leer el odómetro.' });
+
+    const { km } = JSON.parse(jsonMatch[0]);
+    if (km === null || km === undefined) return res.json({ ok: false, mensaje: 'No se pudo leer el número en la imagen.' });
+
+    console.log(`[IA] escanear-odometro (${tipo}) → ${km} km`);
+    res.json({ ok: true, km: Number(km) });
+  } catch (e) {
+    console.error('[IA] escanear-odometro:', e.message);
+    res.status(500).json({ ok: false, mensaje: 'Error al procesar la imagen: ' + e.message });
+  }
+});
+
 module.exports = router;
