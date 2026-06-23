@@ -8,7 +8,7 @@ const errHandler = (res, req, e) => {
   res.status(500).json({ ok: false, mensaje: e.message });
 };
 
-router.get('/', verifyToken, async (req, res) => {
+router.get('/', verifyToken, requireAdmin, async (req, res) => {
   try {
     const { termino } = req.query;
     // Check both 'registro' and 'BENEFICIARIOS' (migration may have used uppercase)

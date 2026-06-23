@@ -10,7 +10,7 @@ const errHandler = (res, req, e) => {
 
 // ── DATOS FISCALES ────────────────────────────────────────────────────────────
 
-router.get('/datos-fiscales', verifyToken, async (req, res) => {
+router.get('/datos-fiscales', verifyToken, requireAdmin, async (req, res) => {
   try {
     const doc = await db.collection('empresas').doc(req.tenantId).get();
     const datos = doc.exists ? (doc.data().datosFiscales || {}) : {};
@@ -191,7 +191,7 @@ router.put('/esp/ingresos/:id/pagar', verifyToken, requireAdmin, async (req, res
 
 // ── PUNTOS DE VENTA ───────────────────────────────────────────────────────────
 
-router.get('/puntos-venta', verifyToken, async (req, res) => {
+router.get('/puntos-venta', verifyToken, requireAdmin, async (req, res) => {
   try {
     const snap = await col(req.tenantId, 'puntosVenta').get();
     res.json({ ok: true, puntosVenta: snap.docs.map(d => ({ id: d.id, ...d.data() })) });
