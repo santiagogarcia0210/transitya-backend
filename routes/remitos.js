@@ -213,8 +213,16 @@ router.put('/:id', verifyToken, async (req, res) => {
   } catch (e) { errHandler(res, req, e); }
 });
 
-router.delete('/:id', verifyToken, requireAdmin, async (req, res) => {
+router.delete('/:id', verifyToken, async (req, res) => {
   try {
+    const snap = await col(req.tenantId, 'remitos').doc(req.params.id).get();
+    if (!snap.exists) return res.status(404).json({ ok: false, mensaje: 'No encontrado' });
+    const isAdmin = req.user.rol === 'admin' || req.user.rol === 'administrador' || req.user.rol === 'superadmin';
+    if (!isAdmin) {
+      const chofer = snap.data().chofer || snap.data().CHOFER || '';
+      if (normalizarText_(chofer) !== normalizarText_(req.user.email))
+        return res.status(403).json({ ok: false, mensaje: 'Solo podés borrar tus propios remitos' });
+    }
     await col(req.tenantId, 'remitos').doc(req.params.id).delete();
     res.json({ ok: true });
   } catch (e) { errHandler(res, req, e); }
