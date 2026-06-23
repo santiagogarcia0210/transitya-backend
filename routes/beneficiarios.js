@@ -48,7 +48,9 @@ router.post('/buscar', verifyToken, requireAdmin, async (req, res) => {
   } catch (e) { errHandler(res, req, e); }
 });
 
-router.get('/con-gps/lista', verifyToken, async (req, res) => {
+// requireAdmin: expone GPS de menores — dato más sensible del sistema. Si un flujo de
+// chofer necesita esto en el futuro, NO quitar el guard — filtrar por ruta/email del chofer.
+router.get('/con-gps/lista', verifyToken, requireAdmin, async (req, res) => {
   try {
     const snap = await col(req.tenantId, 'registro').get();
     const lista = snap.docs.map(d => {
@@ -113,7 +115,9 @@ router.get('/chofer/mis-beneficiarios', verifyToken, async (req, res) => {
 });
 
 // GET /:id must be after specific GET routes
-router.get('/:id', verifyToken, async (req, res) => {
+// requireAdmin: un chofer no debe leer beneficiarios arbitrarios por id. Si se necesita
+// un flujo de chofer, crear un endpoint dedicado filtrado por su ruta/asignación.
+router.get('/:id', verifyToken, requireAdmin, async (req, res) => {
   try {
     const doc = await col(req.tenantId, 'registro').doc(req.params.id).get();
     if (!doc.exists) return res.status(404).json({ ok: false, error: 'No encontrado' });
