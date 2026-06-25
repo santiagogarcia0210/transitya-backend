@@ -2,6 +2,7 @@ const router = require('express').Router();
 const Anthropic = require('@anthropic-ai/sdk');
 const { verifyToken, requireAdmin } = require('../middleware/auth');
 const { normalizarText_, fechaHoyAR, col, randomUUID } = require('../utils');
+const { subirFoto } = require('../helpers/storage');
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -9,6 +10,29 @@ const errHandler = (res, req, e) => {
   console.error('[REMITOS]', req.path, e.message);
   res.status(500).json({ ok: false, mensaje: e.message });
 };
+
+async function procesarComprobante(data, tenantId, id) {
+  const raw = data.comprobante;
+  if (!raw || !String(raw).startsWith('data:')) return;
+
+  const matches = String(raw).match(/^data:([^;]+);base64,(.+)$/);
+  if (!matches) { delete data.comprobante; return; }
+
+  const mimeType = matches[1];
+  const base64   = matches[2];
+  const ext      = mimeType.split('/')[1] || 'jpg';
+  const ruta     = `empresas/${tenantId}/remitos/${id}/comprobante.${ext}`;
+
+  try {
+    const url = await subirFoto(base64, mimeType, ruta);
+    data.comprobanteUrl = url;
+    data.comprobante    = url;
+  } catch (e) {
+    console.error('[REMITOS] Storage upload error:', e.message);
+    delete data.comprobante;
+    throw new Error('No se pudo subir el comprobante. Intentá de nuevo en unos segundos.');
+  }
+}
 
 const fechaSort = (f) => {
   const p = String(f || '').split('/');
@@ -179,19 +203,22 @@ router.post('/', verifyToken, async (req, res) => {
     const data = { ...req.body };
     const id = randomUUID();
     const fecha = isoToDMY(data.fecha || '') || fechaHoyAR();
+    await procesarComprobante(data, req.tenantId, id);
     const doc = {
-      ID:            id,
+      ID:              id,
       fecha,
-      nroRemito:     data.nroRemito     || '',
-      razonSocial:   data.razonSocial   || '',
-      cuit:          data.cuit          || '',
-      combustible:   data.combustible   || '',
-      monto:         data.monto         || '',
-      observaciones: data.observaciones || '',
-      comprobante:   data.comprobante   || '',
-      chofer:        req.user.email,
-      CHOFER:        req.user.email,
-      creadoEn:      new Date(),
+      nroRemito:       data.nroRemito       || '',
+      razonSocial:     data.razonSocial     || '',
+      cuit:            data.cuit            || '',
+      combustible:     data.combustible     || '',
+      tipoCombustible: data.tipoCombustible || '',
+      monto:           data.monto           || '',
+      observaciones:   data.observaciones   || '',
+      comprobante:     data.comprobante     || '',
+      comprobanteUrl:  data.comprobanteUrl  || '',
+      chofer:          req.user.email,
+      CHOFER:          req.user.email,
+      creadoEn:        new Date(),
     };
     await col(req.tenantId, 'remitos').doc(id).set(doc);
     res.json({ ok: true, mensaje: 'Remito guardado correctamente.', id });
@@ -208,7 +235,9 @@ router.put('/:id', verifyToken, async (req, res) => {
       if (normalizarText_(chofer) !== normalizarText_(req.user.email))
         return res.status(403).json({ ok: false, mensaje: 'Sin permisos' });
     }
-    await col(req.tenantId, 'remitos').doc(req.params.id).update(req.body);
+    const data = { ...req.body };
+    await procesarComprobante(data, req.tenantId, req.params.id);
+    await col(req.tenantId, 'remitos').doc(req.params.id).update(data);
     res.json({ ok: true });
   } catch (e) { errHandler(res, req, e); }
 });
