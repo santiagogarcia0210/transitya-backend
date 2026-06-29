@@ -51,7 +51,7 @@ router.get('/mensual', verifyToken, requireModulo('reportes'), async (req, res) 
       return true;
     }).map(doc => {
       kmTotal     += Number(doc['KM RECORRIDOS'] || doc.kmRecorridos || 0);
-      costoTotal  += parseMonto_(doc['COMBUSTIBLE ($)'] || doc.combustiblePesos || 0);
+      costoTotal  += parseMonto_(doc.combustibleImporte || doc['COMBUSTIBLE ($)'] || doc.combustiblePesos || 0);
       litrosTotal += Number(doc['COMBUSTIBLE (L)'] || doc.combustibleLitros || 0);
       diasTrab++;
       return doc;
@@ -137,6 +137,7 @@ router.post('/', verifyToken, requireModulo('reportes'), async (req, res) => {
       );
     }
 
+    data.combustibleImporte = parseMonto_(data.combustibleImporte || data['COMBUSTIBLE ($)'] || data.combustiblePesos || 0);
     await col(req.tenantId, 'reportes').doc(id).set({ ...data, creadoEn: new Date() });
     res.json({ ok: true, mensaje: 'REPORTE GUARDADO', kmRecorridos: data['KM RECORRIDOS'], id });
   } catch (e) { errHandler(res, req, e); }
