@@ -88,7 +88,7 @@ router.get('/resumen', verifyToken, requireAdmin, async (req, res) => {
       const fecha = doc.fecha || doc.FECHA || '';
       if (!esMesDMY(fecha, mes, anio)) return;
       kmMes          += Number(doc['KM RECORRIDOS'] || doc.kmRecorridos || 0);
-      combustibleMes += parseMonto_(doc['COMBUSTIBLE ($)'] || doc.combustiblePesos || 0);
+      combustibleMes += parseMonto_(doc.combustibleImporte || doc['COMBUSTIBLE ($)'] || doc.combustiblePesos || 0);
     });
 
     // ── Choferes activos con reporteHoy, vehiculo, hace (GPS) ────────
