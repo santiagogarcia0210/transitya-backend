@@ -1,21 +1,11 @@
 const router = require('express').Router();
 const { verifyToken, requireAdmin } = require('../middleware/auth');
-const { normalizarText_, fechaHoyAR, col, randomUUID } = require('../utils');
+const { normalizarText_, col, randomUUID } = require('../utils');
+const { calcEstado, normalizarDMY } = require('../helpers/fechas');
 
 const errHandler = (res, req, e) => {
   console.error('[VENCIMIENTOS]', req.path, e.message);
   res.status(500).json({ ok: false, mensaje: e.message });
-};
-
-const calcEstado = (fechaVenc, diasAviso) => {
-  const p = String(fechaVenc || '').split('/');
-  if (p.length < 3) return { estado: 'SIN FECHA', diffDias: null };
-  const y    = Number(p[2].length === 2 ? '20' + p[2] : p[2]);
-  const fecha = new Date(y, Number(p[1]) - 1, Number(p[0]));
-  const diff  = Math.round((fecha - new Date()) / (1000 * 60 * 60 * 24));
-  const umbral = Number(diasAviso) || 30;
-  const estado = diff < 0 ? 'VENCIDO' : diff <= umbral ? 'PROXIMO' : 'VIGENTE';
-  return { estado, diffDias: diff };
 };
 
 router.get('/', verifyToken, requireAdmin, async (req, res) => {
@@ -23,7 +13,10 @@ router.get('/', verifyToken, requireAdmin, async (req, res) => {
     const { tipo, persona, estado, todos } = req.query;
     const snap = await col(req.tenantId, 'vencimientos').get();
 
-    let resultado = snap.docs.map(d => {
+    // Soft-delete: se filtra por el campo guardado, no por el estado calculado.
+    let resultado = snap.docs
+      .filter(d => todos || d.data().estado !== 'ELIMINADO')
+      .map(d => {
       const doc = d.data();
       const { estado: est, diffDias } = calcEstado(doc.fechaVenc, doc.diasAviso);
       return {
@@ -32,15 +25,14 @@ router.get('/', verifyToken, requireAdmin, async (req, res) => {
         persona:     doc.persona     || '',
         descripcion: doc.descripcion || '',
         fechaVenc:   doc.fechaVenc   || '',
+        chofer:      doc.chofer      || '',
+        vehiculo:    doc.vehiculo    || '',
         diasAviso:   doc.diasAviso   || 30,
         notas:       doc.notas       || '',
         estado:      est,
         diffDias,
       };
     });
-
-    // Exclude soft-deleted unless ?todos=true
-    if (!todos) resultado = resultado.filter(r => r.estado !== 'ELIMINADO');
 
     if (tipo)    resultado = resultado.filter(r => normalizarText_(r.tipo).includes(normalizarText_(tipo)));
     if (persona) resultado = resultado.filter(r => normalizarText_(r.persona).includes(normalizarText_(persona)));
@@ -59,11 +51,13 @@ router.get('/', verifyToken, requireAdmin, async (req, res) => {
 
 router.post('/', verifyToken, requireAdmin, async (req, res) => {
   try {
-    const { tipo, persona, descripcion, fechaVenc, diasAviso, notas } = req.body;
+    const { tipo, persona, descripcion, diasAviso, notas } = req.body;
+    // El frontend manda fechaVencimiento (yyyy-MM-dd); versiones viejas mandan fechaVenc (dd/MM/yyyy).
+    const fechaVenc = normalizarDMY(req.body.fechaVenc || req.body.fechaVencimiento);
     const id = randomUUID();
     await col(req.tenantId, 'vencimientos').doc(id).set({
       ID: id, tipo: tipo || '', persona: persona || '',
-      descripcion: descripcion || '', fechaVenc: fechaVenc || '',
+      descripcion: descripcion || '', fechaVenc,
       diasAviso: Number(diasAviso) || 30, notas: notas || '',
       estado: 'ACTIVO', creadoEn: new Date(),
     });
@@ -73,8 +67,11 @@ router.post('/', verifyToken, requireAdmin, async (req, res) => {
 
 router.put('/:id', verifyToken, requireAdmin, async (req, res) => {
   try {
+    const { id: _id, estado: _estado, diffDias: _d, fechaVencimiento, ...datos } = req.body;
+    if (datos.fechaVenc || fechaVencimiento) datos.fechaVenc = normalizarDMY(datos.fechaVenc || fechaVencimiento);
+    if (datos.diasAviso !== undefined) datos.diasAviso = Number(datos.diasAviso) || 30;
     await col(req.tenantId, 'vencimientos').doc(req.params.id)
-      .update({ ...req.body, actualizadoEn: new Date() });
+      .update({ ...datos, actualizadoEn: new Date() });
     res.json({ ok: true });
   } catch (e) { errHandler(res, req, e); }
 });

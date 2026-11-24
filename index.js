@@ -25,6 +25,9 @@ app.use(cors({
   credentials: true,
 }));
 
+// Legajos recibe archivos (PDF/fotos en base64, máx. 8 MB) → límite propio, montado antes del parser global.
+app.use('/api/legajos', express.json({ limit: '12mb' }), require('./routes/legajos'));
+
 app.use(express.json({ limit: '5mb' }));
 
 // Rutas
@@ -55,6 +58,8 @@ app.use('/api/altas-pres',         require('./routes/altas-pres'));
 app.use('/api/presentacion-docs',  require('./routes/presentacion-docs'));
 app.use('/api/geo',  require('./routes/geocodificacion'));
 app.use('/api/arca', require('./routes/arca-config'));
+app.use('/api/requisitos-os', require('./routes/requisitos-os'));
+app.use('/api/agenda-admin',  require('./routes/agenda-admin'));
 
 app.get('/health', (req, res) => res.json({ ok: true, version: '1.0.0' }));
 
