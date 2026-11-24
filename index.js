@@ -60,8 +60,12 @@ app.use('/api/geo',  require('./routes/geocodificacion'));
 app.use('/api/arca', require('./routes/arca-config'));
 app.use('/api/requisitos-os', require('./routes/requisitos-os'));
 app.use('/api/agenda-admin',  require('./routes/agenda-admin'));
+app.use('/api/correo',        require('./routes/correo'));
 
 app.get('/health', (req, res) => res.json({ ok: true, version: '1.0.0' }));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Transit·Ya backend corriendo en puerto ${PORT}`));
+
+// Lee el correo de cada empresa conectada cada CORREO_SYNC_MINUTOS (default 10; 0 = apagado).
+require('./services/correoSync').iniciarProgramador(require('./firebase').db);

@@ -56,11 +56,13 @@ async function cargarHechos(tenantId) {
 
 router.get('/panel', verifyToken, requireAdmin, async (req, res) => {
   try {
-    const [tareasSnap, hechos, legajos, vencSnap] = await Promise.all([
+    const [tareasSnap, hechos, legajos, vencSnap, mailsSnap, correoCfg] = await Promise.all([
       col(req.tenantId, 'agenda_tareas').get(),
       cargarHechos(req.tenantId),
       estadoGeneral(req.tenantId),
       col(req.tenantId, 'vencimientos').get(),
+      col(req.tenantId, 'correo_mails').get(),
+      col(req.tenantId, 'correo_config').doc('principal').get(),
     ]);
     const tareas = tareasSnap.docs.flatMap(d => ocurrencias({ id: d.id, ...d.data() }, hechos)).sort(ordenar);
 
@@ -77,13 +79,27 @@ router.get('/panel', verifyToken, requireAdmin, async (req, res) => {
       return (o[a.tipo] - o[b.tipo]) || ((a.diffDias ?? 999) - (b.diffDias ?? 999));
     });
 
+    const mailsPend = mailsSnap.docs.map(d => d.data()).filter(m => m.estado !== 'RESUELTO');
+    const URG = { ALTA: 0, MEDIA: 1, BAJA: 2 };
+    const correo = {
+      conectado: correoCfg.exists,
+      error: correoCfg.exists ? (correoCfg.data().error || '') : '',
+      nuevos: mailsPend.filter(m => m.estado === 'NUEVO').length,
+      conAccion: mailsPend.filter(m => m.requiereAccion).length,
+      destacados: mailsPend.filter(m => m.requiereAccion || m.urgencia === 'ALTA')
+        .sort((a, b) => (URG[a.urgencia] ?? 2) - (URG[b.urgencia] ?? 2) || String(b.fecha).localeCompare(String(a.fecha)))
+        .slice(0, 5)
+        .map(m => ({ id: m.id, asunto: m.asunto, deNombre: m.deNombre || m.de, resumen: m.resumen, accion: m.accion,
+          urgencia: m.urgencia, categoria: m.categoria, fecha: m.fecha, pacienteNombre: m.pacienteNombre || '' })),
+    };
+
     const urgentes =
       tareas.filter(t => t.estado === 'VENCIDO').length +
       vencimientos.filter(v => v.estado === 'VENCIDO').length +
       docsPacientes.filter(a => a.tipo === 'VENCIDO').length;
 
     res.json({
-      ok: true, tareas, vencimientos, docsPacientes,
+      ok: true, tareas, vencimientos, docsPacientes, correo,
       resumen: {
         urgentes,
         tareasPendientes: tareas.filter(t => t.estado !== 'HECHO').length,
