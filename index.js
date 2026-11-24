@@ -1,3 +1,10 @@
+// Node 18 no expone globalThis.crypto (Web Crypto) y imapflow lo usa en su constructor
+// (imap-flow.js:233 -> getRandomId), asi que conectar una casilla fallaba con
+// "Cannot read properties of undefined (reading 'getRandomValues')".
+// engines.node ya exige >=20, donde el global existe; esto es el seguro por si la
+// plataforma vuelve a construir con una version vieja. En Node >=20 el ??= no hace nada.
+// Va antes de cualquier require de la app, no solo de dotenv.
+globalThis.crypto ??= require('node:crypto').webcrypto;
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
