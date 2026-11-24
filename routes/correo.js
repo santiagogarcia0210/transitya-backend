@@ -2,7 +2,8 @@
 const router = require('express').Router();
 const { verifyToken, requireAdmin } = require('../middleware/auth');
 const { col, normalizarText_ } = require('../utils');
-const { encriptar } = require('../helpers/cripto');
+const cripto = require('../helpers/cripto');
+const { encriptar } = cripto;
 const C = require('../services/correoClasificador');
 const S = require('../services/correoSync');
 
@@ -10,6 +11,20 @@ const errHandler = (res, req, e) => {
   console.error('[CORREO]', req.path, e.message);
   res.status(500).json({ ok: false, mensaje: e.message });
 };
+
+// Sin ENCRYPTION_KEY válida no se puede guardar ni leer la contraseña de la casilla,
+// así que el módulo entero queda deshabilitado con 503 (Service Unavailable): es un
+// problema de configuración del servidor, no del cliente. El resto del backend
+// arranca y funciona normal. Va antes de las rutas para que aplique a todas.
+router.use((req, res, next) => {
+  if (cripto.disponible()) return next();
+  console.error('[CORREO] 503 deshabilitado:', req.method, req.path, '—', cripto.motivoNoDisponible());
+  res.status(503).json({
+    ok: false,
+    codigo: 'CORREO_DESHABILITADO',
+    mensaje: 'El módulo de correo está deshabilitado porque falta configurar el cifrado en el servidor. Avisale a soporte.',
+  });
+});
 
 const ESTADOS = new Set(['NUEVO', 'VISTO', 'RESUELTO']);
 

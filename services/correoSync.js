@@ -198,6 +198,12 @@ async function sincronizarTodas(db) {
 function iniciarProgramador(db) {
   const minutos = Number(process.env.CORREO_SYNC_MINUTOS ?? 10);
   if (!minutos || minutos < 1) return null;
+  // Sin clave de cifrado no se puede descifrar la contraseña guardada: cada tick
+  // fallaría. Mejor no despertar el programador y avisar una sola vez al arrancar.
+  if (!require('../helpers/cripto').disponible()) {
+    console.warn('[CORREO] programador apagado: falta ENCRYPTION_KEY.');
+    return null;
+  }
   const tick = () => sincronizarTodas(db).catch(e => console.error('[CORREO] programador:', e.message));
   setTimeout(tick, 60_000);
   return setInterval(tick, minutos * 60_000);
