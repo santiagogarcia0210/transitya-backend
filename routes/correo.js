@@ -6,6 +6,7 @@ const cripto = require('../helpers/cripto');
 const { encriptar } = cripto;
 const C = require('../services/correoClasificador');
 const S = require('../services/correoSync');
+const O = require('../services/correoOauth');
 
 const errHandler = (res, req, e) => {
   console.error('[CORREO]', req.path, e.message);
@@ -36,9 +37,12 @@ function datosConexion(b, previo = {}) {
 }
 
 function vistaConfig(cfg) {
-  if (!cfg) return { conectado: false, iaDisponible: !!process.env.ANTHROPIC_API_KEY, reglas: C.REGLAS_DEFAULT, categorias: C.CATEGORIAS };
+  if (!cfg) return { conectado: false, tipo: '', requiereReconexion: false, iaDisponible: !!process.env.ANTHROPIC_API_KEY, reglas: C.REGLAS_DEFAULT, categorias: C.CATEGORIAS };
+  // Lista blanca explícita: passEnc y refreshTokenEnc NO salen nunca de acá.
   return {
     conectado: true, user: cfg.user, host: cfg.host, port: cfg.port, secure: cfg.secure !== false,
+    tipo: cfg.tipo === 'oauth' ? 'oauth' : 'password',
+    requiereReconexion: cfg.requiereReconexion === true,
     proveedor: cfg.proveedor || 'otro', activo: cfg.activo !== false, usarIA: cfg.usarIA !== false,
     ultimaSync: cfg.ultimaSync || '', error: cfg.error || '', aviso: cfg.aviso || '', stats: cfg.stats || null,
     reglas: C.limpiarReglas(cfg.reglas || C.REGLAS_DEFAULT),
@@ -76,6 +80,8 @@ router.post('/config', verifyToken, requireAdmin, async (req, res) => {
     const cambioCasilla = previo.user && (previo.user !== con.user || previo.host !== con.host);
     await ref.set({
       ...previo, ...con, passEnc, activo: true, error: '',
+      // Pasar a contraseña de aplicación descarta la vinculación OAuth anterior.
+      tipo: 'password', refreshTokenEnc: '', requiereReconexion: false,
       usarIA: previo.usarIA !== false,
       reglas: previo.reglas || C.REGLAS_DEFAULT,
       // Casilla nueva → arranca de cero (últimos 30 días).
@@ -88,12 +94,31 @@ router.post('/config', verifyToken, requireAdmin, async (req, res) => {
 
 router.delete('/config', verifyToken, requireAdmin, async (req, res) => {
   try {
-    await S.refConfig(req.tenantId).delete();
+    const ref = S.refConfig(req.tenantId);
+    // Si estaba vinculada por OAuth, se intenta revocar el permiso en el proveedor
+    // antes de borrar el token. Si no se puede (Microsoft no expone endpoint de
+    // revocación), se borra igual: lo importante es no quedarnos el refresh token.
+    let revocado = null;
+    try {
+      const snap = await ref.get();
+      const cfg = snap.exists ? snap.data() : null;
+      if (cfg && cfg.tipo === 'oauth' && cfg.refreshTokenEnc) {
+        const r = await O.revocar({
+          proveedor: cfg.proveedor,
+          refreshToken: cripto.desencriptar(cfg.refreshTokenEnc),
+        });
+        revocado = r.ok;
+      }
+    } catch (e) {
+      console.warn('[CORREO] no se pudo revocar el permiso:', e.message);
+      revocado = false;
+    }
+    await ref.delete();
     if (req.query.borrarMails === 'true') {
       const snap = await col(req.tenantId, 'correo_mails').get();
       await Promise.all(snap.docs.map(d => d.ref.delete()));
     }
-    res.json({ ok: true });
+    res.json({ ok: true, revocado });
   } catch (e) { errHandler(res, req, e); }
 });
 
