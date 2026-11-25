@@ -130,4 +130,50 @@ function ordenarPorFechaDesc(lista) {
   });
 }
 
-module.exports = { normalizarFecha, fechaSort, fechaToDate, fechaDoc, timestampMs, ordenarPorFechaDesc };
+/** El día de hoy en Argentina como dd/MM/yyyy. `ahora` se puede pasar para probar. */
+const hoyAR = (ahora = new Date()) => normalizarFecha(ahora);
+
+/**
+ * Suma n días (puede ser negativo) a una fecha en cualquier formato → dd/MM/yyyy, o '' si no se
+ * entiende. Es aritmética de calendario con Date.UTC: no depende de la zona del servidor ni de
+ * cambios de horario.
+ */
+function sumarDias(f, n) {
+  const x = fechaToDate(f);
+  if (!x) return '';
+  const d = new Date(Date.UTC(x.getFullYear(), x.getMonth(), x.getDate() + Number(n)));
+  return armar(d.getUTCDate(), d.getUTCMonth() + 1, d.getUTCFullYear());
+}
+
+const NOMBRES_DIA = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
+
+/** Día de la semana de una fecha de calendario: 0 = domingo … 6 = sábado. null si no se entiende. */
+function diaSemana(f) {
+  const n = normalizarFecha(f);
+  if (!n) return null;
+  const [d, m, y] = n.split('/');
+  return new Date(Date.UTC(Number(y), Number(m) - 1, Number(d))).getUTCDay();
+}
+
+/** "lunes", "martes"… ('' si no se entiende). */
+const nombreDiaSemana = f => { const i = diaSemana(f); return i === null ? '' : NOMBRES_DIA[i]; };
+
+/** ¿Es de lunes a viernes? */
+const esDiaHabil = f => { const i = diaSemana(f); return i !== null && i >= 1 && i <= 5; };
+
+/**
+ * Las formas en que ese día puede estar guardado en la base: ISO (yyyy-MM-dd, lo que mandaba el
+ * <input type="date">), dd/MM/yyyy y d/M/yyyy. Sirve para consultar con `where(campo, 'in', ...)`
+ * sin traer toda la colección, mientras haya datos viejos sin normalizar.
+ */
+function variantesFecha(f) {
+  const n = normalizarFecha(f);
+  if (!n) return [];
+  const [d, m, y] = n.split('/');
+  return [...new Set([`${y}-${m}-${d}`, n, `${Number(d)}/${Number(m)}/${y}`])];
+}
+
+module.exports = {
+  normalizarFecha, fechaSort, fechaToDate, fechaDoc, timestampMs, ordenarPorFechaDesc,
+  hoyAR, sumarDias, diaSemana, nombreDiaSemana, esDiaHabil, variantesFecha,
+};

@@ -261,3 +261,32 @@ describe('cómo se exporta', () => {
     assert.ok(require.resolve('../utils/fechas').endsWith(path.join('utils', 'fechas.js')));
   });
 });
+
+describe('helpers de calendario (hoyAR, sumarDias, diaSemana, esDiaHabil, variantesFecha)', () => {
+  const { hoyAR, sumarDias, diaSemana, nombreDiaSemana, esDiaHabil, variantesFecha } = F;
+
+  test('hoyAR usa la hora de Argentina, no la del servidor', () => {
+    assert.strictEqual(hoyAR(new Date('2026-11-26T01:00:00Z')), '25/11/2026', '01:00 UTC = 22:00 del día anterior en Argentina');
+    assert.strictEqual(hoyAR(new Date('2026-11-26T04:00:00Z')), '26/11/2026');
+  });
+
+  test('sumarDias cruza meses, años y bisiestos', () => {
+    assert.strictEqual(sumarDias('31/01/2026', 1), '01/02/2026');
+    assert.strictEqual(sumarDias('01/01/2027', -1), '31/12/2026');
+    assert.strictEqual(sumarDias('28/02/2028', 1), '29/02/2028');
+    assert.strictEqual(sumarDias('2026-11-25', -5), '20/11/2026', 'acepta ISO');
+  });
+
+  test('día de la semana y día hábil', () => {
+    assert.strictEqual(nombreDiaSemana('25/11/2026'), 'miércoles');
+    assert.strictEqual(diaSemana('29/11/2026'), 0, 'domingo = 0');
+    assert.strictEqual(esDiaHabil('27/11/2026'), true, 'viernes');
+    assert.strictEqual(esDiaHabil('28/11/2026'), false, 'sábado');
+    assert.strictEqual(esDiaHabil('29/11/2026'), false, 'domingo');
+  });
+
+  test('variantesFecha: ISO, dd/MM/yyyy y d/M/yyyy, sin repetidos', () => {
+    assert.deepStrictEqual(variantesFecha('05/01/2026'), ['2026-01-05', '05/01/2026', '5/1/2026']);
+    assert.deepStrictEqual(variantesFecha('25/11/2026'), ['2026-11-25', '25/11/2026'], 'sin ceros no hay variante extra');
+  });
+});

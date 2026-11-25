@@ -7,9 +7,10 @@
 const router = require('express').Router();
 const { verifyToken, requireAdmin } = require('../middleware/auth');
 const { col, randomUUID, nombreUsuario } = require('../utils');
-const { calcEstado, normalizarDMY } = require('../helpers/fechas');
-const { ocurrencias, ordenar } = require('../services/agenda');
+const { normalizarDMY } = require('../helpers/fechas');
+const { ocurrencias, ordenar, vencimientosCriticos, ordenarAlertasDocs, correoDestacados } = require('../services/agenda');
 const { estadoGeneral } = require('./legajos');
+const { calcularPizarra } = require('../services/pizarra');
 
 const errHandler = (res, req, e) => {
   console.error('[AGENDA-ADMIN]', req.path, e.message);
@@ -66,31 +67,18 @@ router.get('/panel', verifyToken, requireAdmin, async (req, res) => {
     ]);
     const tareas = tareasSnap.docs.flatMap(d => ocurrencias({ id: d.id, ...d.data() }, hechos)).sort(ordenar);
 
-    const vencimientos = vencSnap.docs
-      .map(d => ({ id: d.id, ...d.data() }))
-      .filter(v => v.estado !== 'ELIMINADO')
-      .map(v => ({ id: v.ID || v.id, descripcion: v.descripcion || '', persona: v.persona || v.chofer || '',
-        tipo: v.tipo || '', fechaVenc: v.fechaVenc || '', ...calcEstado(v.fechaVenc, v.diasAviso) }))
-      .filter(v => v.estado === 'VENCIDO' || v.estado === 'PROXIMO')
-      .sort((a, b) => a.diffDias - b.diffDias);
+    const vencimientos = vencimientosCriticos(vencSnap.docs.map(d => ({ id: d.id, ...d.data() })));
 
-    const docsPacientes = legajos.alertas.sort((a, b) => {
-      const o = { VENCIDO: 0, FALTA: 1, PROXIMO: 2, SIN_FECHA: 3, SIN_OBRA_SOCIAL: 4 };
-      return (o[a.tipo] - o[b.tipo]) || ((a.diffDias ?? 999) - (b.diffDias ?? 999));
-    });
+    const docsPacientes = ordenarAlertasDocs(legajos.alertas);
 
     const mailsPend = mailsSnap.docs.map(d => d.data()).filter(m => m.estado !== 'RESUELTO');
-    const URG = { ALTA: 0, MEDIA: 1, BAJA: 2 };
+    const { conAccion, destacados } = correoDestacados(mailsPend);
     const correo = {
       conectado: correoCfg.exists,
       error: correoCfg.exists ? (correoCfg.data().error || '') : '',
       nuevos: mailsPend.filter(m => m.estado === 'NUEVO').length,
-      conAccion: mailsPend.filter(m => m.requiereAccion).length,
-      destacados: mailsPend.filter(m => m.requiereAccion || m.urgencia === 'ALTA')
-        .sort((a, b) => (URG[a.urgencia] ?? 2) - (URG[b.urgencia] ?? 2) || String(b.fecha).localeCompare(String(a.fecha)))
-        .slice(0, 5)
-        .map(m => ({ id: m.id, asunto: m.asunto, deNombre: m.deNombre || m.de, resumen: m.resumen, accion: m.accion,
-          urgencia: m.urgencia, categoria: m.categoria, fecha: m.fecha, pacienteNombre: m.pacienteNombre || '' })),
+      conAccion,
+      destacados,
     };
 
     const urgentes =
@@ -110,6 +98,16 @@ router.get('/panel', verifyToken, requireAdmin, async (req, res) => {
       hayTareas: tareasSnap.size > 0,
       hayRequisitos: legajos.hayRequisitos,
     });
+  } catch (e) { errHandler(res, req, e); }
+});
+
+// Pizarra del Inicio: lo pendiente de km, agenda, documentación, correo y comprobantes en una sola
+// respuesta liviana (el /panel de arriba es el completo y es más pesado). ?refrescar=1 saltea el caché
+// corto del estado de las carpetas: lo manda el botón Actualizar, no el auto-refresco.
+router.get('/pizarra', verifyToken, requireAdmin, async (req, res) => {
+  try {
+    const r = await calcularPizarra(req.tenantId, { col, estadoGeneral, refrescar: req.query.refrescar === '1' });
+    res.json({ ok: true, ...r });
   } catch (e) { errHandler(res, req, e); }
 });
 

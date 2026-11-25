@@ -19,19 +19,45 @@ function fakeDb() {
     collection: (sub) => coleccion(ruta + '/' + sub),
   });
 
+  // Firestore real admite hasta 30 valores en un "in" (antes 10) y rechaza listas vacías. Se impone
+  // el límite más estricto que se conoce, para que las pruebas fallen si un servicio lo viola.
+  const LIMITE_IN = 30;
+  const coincide = (valor, op, esperado) => {
+    if (op === '==') return valor === esperado;
+    if (op === '!=') return valor !== esperado;
+    if (op === 'in') return esperado.includes(valor);
+    throw new Error('operador no soportado por el fake: ' + op);
+  };
+  const consulta = (base, filtros = [], tope = null) => ({
+    where(campo, op, valor) {
+      if (op === 'in') {
+        if (!Array.isArray(valor) || valor.length === 0) throw new Error('INVALID_ARGUMENT: "in" necesita al menos un valor');
+        if (valor.length > LIMITE_IN) throw new Error('INVALID_ARGUMENT: "in" admite como máximo ' + LIMITE_IN + ' valores');
+      }
+      return consulta(base, [...filtros, [campo, op, valor]], tope);
+    },
+    limit(n) { return consulta(base, filtros, n); },
+    async get() {
+      let lista = [...docs.keys()]
+        .filter(k => k.startsWith(base + '/') && !k.slice(base.length + 1).includes('/'))
+        .map(k => ({ id: k.slice(base.length + 1), data: () => structuredClone(docs.get(k)), ref: ref(k) }))
+        .filter(d => filtros.every(([campo, op, valor]) => coincide(d.data()[campo], op, valor)));
+      if (tope !== null) lista = lista.slice(0, tope);
+      return { docs: lista, size: lista.length, empty: lista.length === 0, forEach: fn => lista.forEach(fn) };
+    },
+  });
+  /** Cuántas consultas se hicieron a cada colección: sirve para probar que no se trae de más. */
+  const lecturas = [];
   const coleccion = (base) => ({
     doc: (id) => ref(base + '/' + id),
-    async get() {
-      return {
-        docs: [...docs.keys()]
-          .filter(k => k.startsWith(base + '/') && !k.slice(base.length + 1).includes('/'))
-          .map(k => ({ id: k.slice(base.length + 1), data: () => structuredClone(docs.get(k)), ref: ref(k) })),
-      };
-    },
+    where(campo, op, valor) { lecturas.push({ base, tipo: 'where', campo, op, cantidad: Array.isArray(valor) ? valor.length : 1 }); return consulta(base).where(campo, op, valor); },
+    limit(n) { return consulta(base).limit(n); },
+    async get() { lecturas.push({ base, tipo: 'get' }); return consulta(base).get(); },
   });
 
   return {
     docs,
+    lecturas,
     coleccion,
     ref,
     collection: (nombre) => coleccion(nombre),
