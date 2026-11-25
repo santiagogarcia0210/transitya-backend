@@ -65,5 +65,7 @@ function col(tenantId, sub) {
 module.exports = {
   normalizarText_, parseMonto_, fechaHoyAR, esAdmin, esSuperadmin,
   nombreUsuario, esMesDMY, esMesISO, generarCorrelativo, col,
-  TIMEZONE, MESES, randomUUID
+  TIMEZONE, MESES, randomUUID,
+  // normalizarFecha, fechaSort, fechaToDate, fechaDoc, timestampMs, ordenarPorFechaDesc
+  ...require('./utils/fechas'),
 };
