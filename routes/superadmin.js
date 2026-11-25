@@ -108,6 +108,27 @@ router.put('/empresas/:id/features', async (req, res) => {
   } catch (e) { errHandler(res, req, e); }
 });
 
+// Interruptor por empresa del botón "Conectar con Google" del módulo Correo.
+// Google exige verificación para el scope restringido https://mail.google.com/, así
+// que hasta que la app esté verificada solo se habilita a las empresas cuyas cuentas
+// estén agregadas como usuarios de prueba. Microsoft no necesita este interruptor.
+// El campo vive en el documento de la empresa (no en config/features, que se
+// reescribe entero al cambiar de plan).
+router.put('/empresas/:id/correo-oauth', async (req, res) => {
+  try {
+    const habilitado = req.body.oauthGoogleHabilitado === true;
+    await db.collection('empresas').doc(req.params.id)
+      .set({ oauthGoogleHabilitado: habilitado }, { merge: true });
+    try {
+      await db.collection('LOGS_AUDITORIA').add({
+        accion: 'CORREO_OAUTH_GOOGLE', tenantId: req.params.id, valor: habilitado,
+        email: req.user.email, fecha: new Date().toISOString(), ip: req.ip || '',
+      });
+    } catch { /* la auditoría no debe tumbar la acción */ }
+    res.json({ ok: true, oauthGoogleHabilitado: habilitado });
+  } catch (e) { errHandler(res, req, e); }
+});
+
 router.put('/empresas/:id/limites', async (req, res) => {
   try {
     await db.collection('empresas').doc(req.params.id).collection('config').doc('limites').set({ ...req.body, _updatedAt: new Date().toISOString() }, { merge: true });

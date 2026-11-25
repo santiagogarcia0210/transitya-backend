@@ -19,6 +19,7 @@ const COLECCION_STATE = 'correo_oauth_state';
 const CODIGOS = {
   PROVEEDOR: 'proveedor_invalido',
   DESHABILITADO: 'proveedor_deshabilitado',
+  NO_HABILITADO_EMPRESA: 'proveedor_no_habilitado_para_la_empresa',
   STATE: 'state_invalido',
   VENCIDO: 'state_vencido',
   USADO: 'state_usado',
@@ -108,6 +109,45 @@ function listarProveedores() {
 }
 
 const hayAlgunoHabilitado = () => Object.keys(PROVEEDORES).some(estaHabilitado);
+
+/* ── Habilitación por empresa ──────────────────────────────────────────── */
+
+// Google exige verificación con evaluación de seguridad para el scope restringido
+// https://mail.google.com/. Mientras la app no esté verificada solo funciona con las
+// cuentas agregadas como usuarios de prueba, así que el botón de Google se habilita
+// empresa por empresa con este campo booleano del documento empresas/{tenantId}.
+// Microsoft no tiene esa restricción: va habilitado para todas.
+const CAMPO_HABILITACION = { google: 'oauthGoogleHabilitado' };
+
+/** true si el proveedor está configurado en el servidor Y habilitado para esa empresa. */
+async function habilitadoParaEmpresa(idProveedor, tenantId, db = null) {
+  if (!estaHabilitado(idProveedor)) return false;
+  const campo = CAMPO_HABILITACION[idProveedor];
+  if (!campo) return true; // proveedor sin restricción por empresa
+  if (!tenantId) return false;
+  try {
+    const base = db || require('../firebase').db;
+    const snap = await base.collection('empresas').doc(tenantId).get();
+    return snap.exists && snap.data()[campo] === true;
+  } catch {
+    // Si no se puede leer la empresa, no se ofrece el botón: mejor que ofrecer
+    // una vinculación que después va a fallar en la pantalla del proveedor.
+    return false;
+  }
+}
+
+/** Igual que listarProveedores, pero aplicando la habilitación de esa empresa. */
+async function listarProveedoresParaEmpresa(tenantId, db = null) {
+  const lista = listarProveedores();
+  return Promise.all(
+    lista.map(async p => ({
+      ...p,
+      habilitado: p.habilitado && (await habilitadoParaEmpresa(p.id, tenantId, db)),
+      // Para que el superadmin sepa cuáles dependen de un interruptor por empresa.
+      requiereHabilitacion: !!CAMPO_HABILITACION[p.id],
+    }))
+  );
+}
 
 /* ── State firmado, con vencimiento y de un solo uso ───────────────────── */
 
@@ -360,6 +400,9 @@ module.exports = {
   estaHabilitado,
   listarProveedores,
   hayAlgunoHabilitado,
+  CAMPO_HABILITACION,
+  habilitadoParaEmpresa,
+  listarProveedoresParaEmpresa,
   baseRedirect,
   urlCallback,
   urlDashboard,

@@ -17,17 +17,25 @@ const volverError = (res, codigo) => volver(res, 'error=' + encodeURIComponent(c
 
 /* ── Qué proveedores están disponibles ─────────────────────────────────── */
 
-router.get('/proveedores', verifyToken, requireAdmin, (req, res) => {
-  // Si no hay cifrado no se puede guardar el refresh token: se informa como
-  // "nada habilitado" en lugar de ofrecer botones que van a fallar.
-  const cifrado = cripto.disponible();
-  res.json({
-    ok: true,
-    cifradoDisponible: cifrado,
-    proveedores: cifrado
-      ? O.listarProveedores()
-      : O.listarProveedores().map(p => ({ ...p, habilitado: false })),
-  });
+router.get('/proveedores', verifyToken, requireAdmin, async (req, res) => {
+  try {
+    // Si no hay cifrado no se puede guardar el refresh token: se informa como
+    // "nada habilitado" en lugar de ofrecer botones que van a fallar.
+    const cifrado = cripto.disponible();
+    const lista = cifrado
+      ? await O.listarProveedoresParaEmpresa(req.tenantId)
+      : O.listarProveedores().map(p => ({ ...p, habilitado: false }));
+    res.json({ ok: true, cifradoDisponible: cifrado, proveedores: lista });
+  } catch (e) {
+    console.error('[CORREO-OAUTH] proveedores:', e.message);
+    // Ante un error se responde "ninguno habilitado": la pantalla cae en la
+    // contraseña de aplicación y sigue siendo usable.
+    res.json({
+      ok: true,
+      cifradoDisponible: cripto.disponible(),
+      proveedores: O.listarProveedores().map(p => ({ ...p, habilitado: false })),
+    });
+  }
 });
 
 /* ── Paso 1: armar la URL de autorización ──────────────────────────────── */
@@ -50,6 +58,15 @@ router.post('/:proveedor/iniciar', verifyToken, requireAdmin, async (req, res) =
         ok: false,
         codigo: O.CODIGOS.DESHABILITADO,
         mensaje: 'Ese proveedor no está configurado en el servidor. Podés conectar con contraseña de aplicación.',
+      });
+    }
+    // La habilitación por empresa se valida también acá, no solo escondiendo el
+    // botón: si no, cualquiera con token de admin podría llamar este endpoint.
+    if (!(await O.habilitadoParaEmpresa(proveedor, req.tenantId))) {
+      return res.status(403).json({
+        ok: false,
+        codigo: O.CODIGOS.NO_HABILITADO_EMPRESA,
+        mensaje: 'La conexión con ese proveedor todavía no está habilitada para tu empresa. Podés conectar con contraseña de aplicación.',
       });
     }
 
@@ -94,11 +111,17 @@ router.get('/:proveedor/callback', async (req, res) => {
     const { tenantId, proveedor: provState, nonce } = v.datos;
     if (provState !== proveedor) return volverError(res, O.CODIGOS.STATE);
 
-    // 2) Un solo uso: consumir el nonce en transacción.
+    // 2) La habilitación puede haberse apagado mientras el usuario estaba en la
+    // pantalla del proveedor: se vuelve a chequear antes de guardar nada.
+    if (!(await O.habilitadoParaEmpresa(proveedor, tenantId))) {
+      return volverError(res, O.CODIGOS.NO_HABILITADO_EMPRESA);
+    }
+
+    // 3) Un solo uso: consumir el nonce en transacción.
     const consumo = await O.consumirState({ tenantId, proveedor, nonce });
     if (!consumo.ok) return volverError(res, consumo.codigo);
 
-    // 3) Code por tokens.
+    // 4) Code por tokens.
     const tok = await O.intercambiarCode({ proveedor, code, verifier: consumo.verifier });
     if (!tok.ok) return volverError(res, tok.codigo);
     if (!tok.datos.refreshToken) {
@@ -106,7 +129,7 @@ router.get('/:proveedor/callback', async (req, res) => {
       return volverError(res, O.CODIGOS.SIN_REFRESH);
     }
 
-    // 4) Mail de la cuenta que se acaba de autorizar.
+    // 5) Mail de la cuenta que se acaba de autorizar.
     const user = await O.obtenerMail({
       proveedor,
       idToken: tok.datos.idToken,
@@ -114,7 +137,7 @@ router.get('/:proveedor/callback', async (req, res) => {
     });
     if (!user) return volverError(res, O.CODIGOS.MAIL);
 
-    // 5) Probar IMAP antes de guardar, para no dejar una casilla "conectada" que falla.
+    // 6) Probar IMAP antes de guardar, para no dejar una casilla "conectada" que falla.
     const imap = O.PROVEEDORES[proveedor].imap;
     const prueba = await S.probarConexion({ ...imap, user, accessToken: tok.datos.accessToken });
     if (!prueba.ok) {
@@ -122,7 +145,7 @@ router.get('/:proveedor/callback', async (req, res) => {
       return volverError(res, O.CODIGOS.IMAP);
     }
 
-    // 6) Guardar. El refresh token va cifrado; el access token no se persiste.
+    // 7) Guardar. El refresh token va cifrado; el access token no se persiste.
     const ref = S.refConfig(tenantId);
     const snap = await ref.get();
     const previo = snap.exists ? snap.data() : {};

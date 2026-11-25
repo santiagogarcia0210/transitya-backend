@@ -50,6 +50,8 @@ function fakeDb() {
     docs,
     coleccion,
     ref,
+    // Lo que usa habilitadoParaEmpresa: db.collection('empresas').doc(id).get()
+    collection: (nombre) => ({ doc: (id) => ref(nombre + '/' + id) }),
     async runTransaction(fn) {
       return fn({
         async get(r) { return r.get(); },
@@ -158,6 +160,102 @@ describe('qué proveedores se ofrecen', () => {
     const { O } = cargarOauth();
     assert.strictEqual(O.estaHabilitado('yahoo'), false);
     assert.strictEqual(O.estaHabilitado(''), false);
+  });
+});
+
+/* ── Habilitación por empresa (Google con interruptor, Microsoft para todas) ── */
+
+describe('habilitación por empresa', () => {
+  const CREDS_AMBOS = {
+    ...CREDS_GOOGLE,
+    MICROSOFT_OAUTH_CLIENT_ID: 'id-ms',
+    MICROSOFT_OAUTH_CLIENT_SECRET: 'sec-ms',
+  };
+
+  test('Microsoft no necesita interruptor: va habilitado para cualquier empresa', async () => {
+    const { O, db } = cargarOauth();
+    await conEnv(CREDS_AMBOS, async () => {
+      // Empresa sin ningún campo de habilitación.
+      db.docs.set('empresas/t1', { nombre: 'Transportes Uno' });
+      assert.strictEqual(await O.habilitadoParaEmpresa('microsoft', 't1', db), true);
+    });
+  });
+
+  test('Google NO se habilita si la empresa no tiene el campo en true', async () => {
+    const { O, db } = cargarOauth();
+    await conEnv(CREDS_AMBOS, async () => {
+      db.docs.set('empresas/t1', { nombre: 'Transportes Uno' });
+      assert.strictEqual(await O.habilitadoParaEmpresa('google', 't1', db), false);
+
+      // Tampoco con valores que no sean exactamente true.
+      for (const valor of [false, 'true', 1, null]) {
+        db.docs.set('empresas/t1', { oauthGoogleHabilitado: valor });
+        assert.strictEqual(
+          await O.habilitadoParaEmpresa('google', 't1', db), false,
+          'no debería habilitarse con ' + JSON.stringify(valor)
+        );
+      }
+    });
+  });
+
+  test('Google se habilita con el campo en true', async () => {
+    const { O, db } = cargarOauth();
+    await conEnv(CREDS_AMBOS, async () => {
+      db.docs.set('empresas/t1', { oauthGoogleHabilitado: true });
+      assert.strictEqual(await O.habilitadoParaEmpresa('google', 't1', db), true);
+    });
+  });
+
+  test('el interruptor no alcanza si faltan las credenciales del servidor', async () => {
+    const { O, db } = cargarOauth();
+    await conEnv({ GOOGLE_OAUTH_CLIENT_ID: '', GOOGLE_OAUTH_CLIENT_SECRET: '' }, async () => {
+      db.docs.set('empresas/t1', { oauthGoogleHabilitado: true });
+      assert.strictEqual(await O.habilitadoParaEmpresa('google', 't1', db), false);
+    });
+  });
+
+  test('empresa inexistente o sin tenantId: Google no se ofrece', async () => {
+    const { O, db } = cargarOauth();
+    await conEnv(CREDS_AMBOS, async () => {
+      assert.strictEqual(await O.habilitadoParaEmpresa('google', 'no-existe', db), false);
+      assert.strictEqual(await O.habilitadoParaEmpresa('google', '', db), false);
+    });
+  });
+
+  test('la lista para una empresa sin habilitar deja Google afuera y Microsoft adentro', async () => {
+    const { O, db } = cargarOauth();
+    await conEnv(CREDS_AMBOS, async () => {
+      db.docs.set('empresas/t1', { nombre: 'Transportes Uno' });
+      const lista = await O.listarProveedoresParaEmpresa('t1', db);
+      const porId = Object.fromEntries(lista.map(p => [p.id, p]));
+      assert.strictEqual(porId.google.habilitado, false);
+      assert.strictEqual(porId.microsoft.habilitado, true);
+      assert.strictEqual(porId.google.requiereHabilitacion, true, 'Google depende del interruptor');
+      assert.strictEqual(porId.microsoft.requiereHabilitacion, false, 'Microsoft no');
+    });
+  });
+
+  test('la lista para una empresa habilitada incluye los dos', async () => {
+    const { O, db } = cargarOauth();
+    await conEnv(CREDS_AMBOS, async () => {
+      db.docs.set('empresas/t1', { oauthGoogleHabilitado: true });
+      const lista = await O.listarProveedoresParaEmpresa('t1', db);
+      assert.ok(lista.every(p => p.habilitado), 'los dos habilitados');
+    });
+  });
+
+  test('si falla la lectura de la empresa, Google no se ofrece', async () => {
+    const { O } = cargarOauth();
+    await conEnv(CREDS_AMBOS, async () => {
+      const dbRoto = { collection: () => { throw new Error('Firestore caído'); } };
+      assert.strictEqual(await O.habilitadoParaEmpresa('google', 't1', dbRoto), false);
+    });
+  });
+
+  test('el campo del interruptor es el que se documentó', () => {
+    const { O } = cargarOauth();
+    assert.strictEqual(O.CAMPO_HABILITACION.google, 'oauthGoogleHabilitado');
+    assert.strictEqual(O.CAMPO_HABILITACION.microsoft, undefined);
   });
 });
 
