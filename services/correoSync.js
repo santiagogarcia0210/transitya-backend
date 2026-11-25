@@ -9,6 +9,9 @@ const { createHash } = require('crypto');
 const { col } = require('../utils');
 const C = require('./correoClasificador');
 
+const MENSAJE_RECONEXION =
+  'Se cortó el permiso de acceso a la casilla. Volvé a apretar Reconectar para autorizarla de nuevo.';
+
 const DIAS_PRIMERA_SYNC = 30;
 const MAX_POR_SYNC = 300;
 const MAX_BYTES_MAIL = 150 * 1024;
@@ -16,11 +19,14 @@ const enCurso = new Set();
 
 const refConfig = t => col(t, 'correo_config').doc('principal');
 
-function crearCliente({ host, port, secure, user, pass }) {
+// Acepta las dos formas de autenticación: contraseña de aplicación (pass) o
+// access token de OAuth (accessToken, que imapflow manda como XOAUTH2).
+function crearCliente({ host, port, secure, user, pass, accessToken }) {
   const { ImapFlow } = require('imapflow');
+  const auth = accessToken ? { user, accessToken } : { user, pass };
   return new ImapFlow({
     host, port: Number(port) || 993, secure: secure !== false,
-    auth: { user, pass }, logger: false, socketTimeout: 60_000, greetingTimeout: 20_000,
+    auth, logger: false, socketTimeout: 60_000, greetingTimeout: 20_000,
   });
 }
 
@@ -32,21 +38,80 @@ function traducirError(e) {
   if (/ENOTFOUND|EAI_AGAIN/.test(m)) return 'No se encontró el servidor de correo. Revisá el servidor IMAP.';
   if (/ECONNREFUSED|ETIMEDOUT|timeout/i.test(m)) return 'El servidor de correo no responde. Revisá servidor y puerto.';
   if (/IMAP.*disabled|not enabled/i.test(m)) return 'La casilla tiene IMAP deshabilitado. Activalo en la configuración del mail.';
+  if (/invalid_grant|reconexion|reconexión/i.test(m)) return MENSAJE_RECONEXION;
   return m.slice(0, 200) || 'Error desconocido al conectar con el correo.';
 }
 
 /** Solo prueba login + abrir INBOX. */
 async function probarConexion(cfg, factory = crearCliente) {
-  const client = factory(cfg);
+  // El cliente se construye ADENTRO del try: si el constructor falla (p. ej. una
+  // dependencia que necesita un global ausente), sale como mensaje claro y no como
+  // un 500 crudo en la pantalla.
+  let client = null;
   try {
+    client = factory(cfg);
     await client.connect();
     const mb = await client.mailboxOpen('INBOX', { readOnly: true });
     return { ok: true, mensajes: mb.exists };
   } catch (e) {
     return { ok: false, mensaje: traducirError(e) };
   } finally {
-    try { await client.logout(); } catch { /* ignore */ }
+    try { if (client) await client.logout(); } catch { /* ignore */ }
   }
+}
+
+/**
+ * Devuelve con qué credenciales conectarse, según el tipo de config.
+ *  - tipo 'oauth'    -> renueva el access token con el refresh token guardado.
+ *  - cualquier otro  -> descifra la contraseña de aplicación (comportamiento previo).
+ *
+ * Si el refresh falla con invalid_grant (permiso revocado o vencido), marca la config
+ * como requiereReconexion para que la pantalla ofrezca el botón Reconectar, y NO
+ * reintenta: el usuario tiene que autorizar de nuevo.
+ *
+ * Si el proveedor devuelve un refresh token nuevo, se guarda cifrado.
+ * Devuelve { ok, creds?, mensaje?, requiereReconexion? }. Nunca loguea tokens.
+ */
+async function resolverCredenciales(tenantId, cfg, deps = {}) {
+  const desencriptar = deps.desencriptar || require('../helpers/cripto').desencriptar;
+
+  if (cfg.tipo !== 'oauth') {
+    if (!cfg.passEnc) return { ok: false, mensaje: 'No hay contraseña guardada para la casilla.' };
+    return { ok: true, creds: { pass: desencriptar(cfg.passEnc) } };
+  }
+
+  const O = deps.oauth || require('./correoOauth');
+  const encriptar = deps.encriptar || require('../helpers/cripto').encriptar;
+  if (!cfg.refreshTokenEnc) {
+    return { ok: false, mensaje: MENSAJE_RECONEXION, requiereReconexion: true };
+  }
+  if (!O.estaHabilitado(cfg.proveedor)) {
+    return { ok: false, mensaje: 'El proveedor de la casilla ya no está configurado en el servidor.' };
+  }
+
+  const r = await O.refrescarAccessToken({
+    proveedor: cfg.proveedor,
+    refreshToken: desencriptar(cfg.refreshTokenEnc),
+  });
+
+  if (!r.ok) {
+    if (r.invalidGrant) return { ok: false, mensaje: MENSAJE_RECONEXION, requiereReconexion: true };
+    return { ok: false, mensaje: 'No se pudo renovar el permiso de la casilla. Probá de nuevo en unos minutos.' };
+  }
+
+  // Algunos proveedores rotan el refresh token: si llega uno nuevo, se reemplaza.
+  if (r.datos.refreshToken) {
+    // Se cifra ANTES de tocar Firestore: si el write falla, el token nuevo igual
+    // quedó cifrado y el error no deja un valor en claro a medio camino.
+    const nuevoEnc = encriptar(r.datos.refreshToken);
+    try {
+      await refConfig(tenantId).update({ refreshTokenEnc: nuevoEnc });
+    } catch (e) {
+      console.warn('[CORREO] no se pudo guardar el refresh token rotado:', e.message);
+    }
+  }
+
+  return { ok: true, creds: { accessToken: r.datos.accessToken } };
 }
 
 const idMail = (messageId, uidValidity, uid) =>
@@ -103,7 +168,16 @@ async function sincronizarEmpresa(tenantId, deps = {}) {
     const llamarIA = deps.llamarIA !== undefined ? deps.llamarIA : (cfg.usarIA !== false ? C.llamadorAnthropic() : null);
     const reglas = C.limpiarReglas(cfg.reglas || C.REGLAS_DEFAULT);
 
-    const client = factory({ ...cfg, pass: desencriptar(cfg.passEnc) });
+    const cred = await resolverCredenciales(tenantId, cfg, { ...deps, desencriptar });
+    if (!cred.ok) {
+      await ref.update({
+        error: cred.mensaje,
+        requiereReconexion: !!cred.requiereReconexion,
+        ultimaSync: new Date().toISOString(),
+      }).catch(() => {});
+      return { ok: false, mensaje: cred.mensaje, requiereReconexion: !!cred.requiereReconexion };
+    }
+    const client = factory({ ...cfg, ...cred.creds });
     const nuevos = [];
     let uidValidity, maxUid = Number(cfg.ultimoUid) || 0;
     try {
@@ -172,6 +246,7 @@ async function sincronizarEmpresa(tenantId, deps = {}) {
     await ref.update({
       uidValidity: uidValidity || cfg.uidValidity || '', ultimoUid: maxUid,
       ultimaSync: new Date().toISOString(), error: '', aviso: avisoIA, stats,
+      requiereReconexion: false,
     });
     return { ok: true, ...stats, aviso: avisoIA };
   } catch (e) {
@@ -209,4 +284,8 @@ function iniciarProgramador(db) {
   return setInterval(tick, minutos * 60_000);
 }
 
-module.exports = { probarConexion, sincronizarEmpresa, sincronizarTodas, iniciarProgramador, normalizarMensaje, traducirError, refConfig };
+module.exports = {
+  probarConexion, sincronizarEmpresa, sincronizarTodas, iniciarProgramador,
+  normalizarMensaje, traducirError, refConfig, crearCliente, resolverCredenciales,
+  MENSAJE_RECONEXION,
+};

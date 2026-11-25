@@ -1,4 +1,4 @@
-const { createCipheriv, createDecipheriv, randomBytes } = require('crypto');
+const { createCipheriv, createDecipheriv, randomBytes, createHmac } = require('crypto');
 
 /**
  * Cifrado AES-256-GCM para secretos de cada empresa (contraseñas IMAP, cert/key de ARCA).
@@ -50,6 +50,18 @@ function motivoNoDisponible() {
   return motivo_;
 }
 
+/**
+ * Deriva una subclave de 32 bytes a partir de ENCRYPTION_KEY, atada a una etiqueta.
+ * Sirve para firmar cosas (ej. el state de OAuth) sin reutilizar la clave de cifrado:
+ * etiquetas distintas dan claves independientes, así que una firma no sirve en otro contexto.
+ * Lanza si no hay clave, igual que encriptar/desencriptar.
+ */
+function derivarClave(etiqueta) {
+  exigirClave_();
+  if (!etiqueta) throw new Error('[cripto] derivarClave necesita una etiqueta.');
+  return createHmac('sha256', keyBuf).update(String(etiqueta)).digest();
+}
+
 function exigirClave_() {
   if (!keyBuf) throw new Error(`[cripto] ${motivo_}`);
 }
@@ -74,4 +86,4 @@ function desencriptar(texto) {
   return Buffer.concat([decipher.update(data), decipher.final()]).toString('utf8');
 }
 
-module.exports = { encriptar, desencriptar, disponible, motivoNoDisponible };
+module.exports = { encriptar, desencriptar, disponible, motivoNoDisponible, derivarClave };

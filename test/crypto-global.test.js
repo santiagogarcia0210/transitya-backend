@@ -55,15 +55,21 @@ describe('el fallo original (Node 18, sin el arreglo)', () => {
       'sin el arreglo, construir el cliente debe fallar con el mensaje reportado');
   });
 
-  test('crearCliente lanza FUERA del try de probarConexion, por eso salía como 500 crudo', () => {
-    // Confirma el diagnóstico: el throw ocurre al construir, no al conectar.
+  test('ahora probarConexion lo atrapa y lo traduce, en vez de dejarlo escapar como 500', () => {
+    // Antes, crearCliente() corría fuera del try de probarConexion(), así que este
+    // error escapaba al handler de la ruta y salía como 500 crudo en pantalla.
+    // El cliente se construye adentro del try, así que ahora sale como mensaje.
     const out = comoNode18(`
       const S = require(RAIZ + '/services/correoSync');
       S.probarConexion({ host: 'imap.invalido.test', port: 993, secure: true, user: 'a@b.c', pass: 'x' })
         .then(r => console.log('devolvio=' + JSON.stringify(r)))
         .catch(e => console.log('lanzo=' + e.message));`);
-    assert.match(out, /lanzo=Cannot read properties of undefined \(reading 'getRandomValues'\)/,
-      'probarConexion no lo atrapa porque crearCliente corre antes del try');
+    assert.doesNotMatch(out, /^lanzo=/m, 'no debe escapar: probarConexion tiene que atraparlo');
+    assert.match(out, /devolvio=/);
+    const r = JSON.parse(out.match(/devolvio=({.*})/)[1]);
+    assert.strictEqual(r.ok, false);
+    assert.match(r.mensaje, /getRandomValues/,
+      'el mensaje traducido deja ver la causa, pero como respuesta controlada');
   });
 });
 

@@ -67,6 +67,9 @@ app.use('/api/geo',  require('./routes/geocodificacion'));
 app.use('/api/arca', require('./routes/arca-config'));
 app.use('/api/requisitos-os', require('./routes/requisitos-os'));
 app.use('/api/agenda-admin',  require('./routes/agenda-admin'));
+// El router OAuth va ANTES de /api/correo: su callback es una redirección del
+// navegador y no debe caer en el guard 503 que devuelve JSON.
+app.use('/api/correo/oauth', require('./routes/correo-oauth'));
 app.use('/api/correo',        require('./routes/correo'));
 
 app.get('/health', (req, res) => res.json({ ok: true, version: '1.0.0' }));
