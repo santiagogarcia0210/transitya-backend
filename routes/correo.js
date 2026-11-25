@@ -37,11 +37,13 @@ function datosConexion(b, previo = {}) {
 }
 
 function vistaConfig(cfg) {
-  if (!cfg) return { conectado: false, tipo: '', requiereReconexion: false, iaDisponible: !!process.env.ANTHROPIC_API_KEY, reglas: C.REGLAS_DEFAULT, categorias: C.CATEGORIAS };
+  if (!cfg) return { conectado: false, tipo: '', requiereReconexion: false, carpetas: [S.CARPETA_DEFAULT], carpetasPendientes: [], iaDisponible: !!process.env.ANTHROPIC_API_KEY, reglas: C.REGLAS_DEFAULT, categorias: C.CATEGORIAS };
   // Lista blanca explícita: passEnc y refreshTokenEnc NO salen nunca de acá.
   return {
     conectado: true, user: cfg.user, host: cfg.host, port: cfg.port, secure: cfg.secure !== false,
     tipo: cfg.tipo === 'oauth' ? 'oauth' : 'password',
+    // Configs anteriores a las carpetas se leen migradas (INBOX), sin tocar Firestore.
+    carpetas: S.leerCarpetas(cfg).carpetas, carpetasPendientes: S.carpetasPendientes(cfg),
     requiereReconexion: cfg.requiereReconexion === true,
     proveedor: cfg.proveedor || 'otro', activo: cfg.activo !== false, usarIA: cfg.usarIA !== false,
     ultimaSync: cfg.ultimaSync || '', error: cfg.error || '', aviso: cfg.aviso || '', stats: cfg.stats || null,
@@ -85,7 +87,7 @@ router.post('/config', verifyToken, requireAdmin, async (req, res) => {
       usarIA: previo.usarIA !== false,
       reglas: previo.reglas || C.REGLAS_DEFAULT,
       // Casilla nueva → arranca de cero (últimos 30 días).
-      ...(cambioCasilla || !previo.user ? { ultimoUid: 0, uidValidity: '' } : {}),
+      ...(cambioCasilla || !previo.user ? S.reinicioCarpetas() : {}),
       conectadoEn: previo.conectadoEn || new Date().toISOString(), actualizadoEn: new Date().toISOString(),
     });
     res.json({ ok: true, mensajes: prueba.mensajes });
@@ -122,6 +124,24 @@ router.delete('/config', verifyToken, requireAdmin, async (req, res) => {
   } catch (e) { errHandler(res, req, e); }
 });
 
+// Carpetas de la casilla conectada, marcando cuáles se revisan.
+router.get('/carpetas', verifyToken, requireAdmin, async (req, res) => {
+  try {
+    const r = await S.listarCarpetas(req.tenantId);
+    if (!r.ok) return res.status(r.status || 400).json({ ok: false, mensaje: r.mensaje, requiereReconexion: !!r.requiereReconexion });
+    res.json({ ok: true, carpetas: r.carpetas, seleccionadas: r.seleccionadas, pendientes: r.pendientes });
+  } catch (e) { errHandler(res, req, e); }
+});
+
+// Guarda qué carpetas se revisan. Valida que existan en la casilla.
+router.put('/config/carpetas', verifyToken, requireAdmin, async (req, res) => {
+  try {
+    const r = await S.guardarCarpetas(req.tenantId, req.body && req.body.carpetas);
+    if (!r.ok) return res.status(r.status || 400).json({ ok: false, mensaje: r.mensaje });
+    res.json({ ok: true, carpetas: r.carpetas, nuevas: r.nuevas });
+  } catch (e) { errHandler(res, req, e); }
+});
+
 router.put('/reglas', verifyToken, requireAdmin, async (req, res) => {
   try {
     const ref = S.refConfig(req.tenantId);
@@ -142,11 +162,18 @@ router.post('/sincronizar', verifyToken, requireAdmin, async (req, res) => {
 });
 
 // Vuelve a revisar los últimos 30 días (útil después de cambiar las reglas). No duplica.
+// Body opcional { carpetas: [...] }: solo esas (útil para las recién agregadas). Sin body, todas.
 router.post('/reescanear', verifyToken, requireAdmin, async (req, res) => {
   try {
     const ref = S.refConfig(req.tenantId);
-    if (!(await ref.get()).exists) return res.status(404).json({ ok: false, mensaje: 'Primero conectá el correo.' });
-    await ref.update({ ultimoUid: 0 });
+    const snap = await ref.get();
+    if (!snap.exists) return res.status(404).json({ ok: false, mensaje: 'Primero conectá el correo.' });
+    const cfg = snap.data();
+    const { carpetas } = S.leerCarpetas(cfg);
+    const pedidas = Array.isArray(req.body && req.body.carpetas) ? req.body.carpetas.map(S.nombreCarpeta) : null;
+    const objetivo = pedidas ? pedidas.filter(c => carpetas.includes(c)) : carpetas;
+    if (!objetivo.length) return res.status(400).json({ ok: false, mensaje: 'Esas carpetas no están entre las que se revisan.' });
+    await ref.update({ carpetas, estadoCarpetas: S.estadoParaReescanear(cfg, objetivo) });
     const r = await S.sincronizarEmpresa(req.tenantId);
     res.status(r.ok ? 200 : 400).json(r);
   } catch (e) { errHandler(res, req, e); }
@@ -156,7 +183,7 @@ router.get('/mails', verifyToken, requireAdmin, async (req, res) => {
   try {
     const { estado, categoria, q, pacienteId } = req.query;
     const snap = await col(req.tenantId, 'correo_mails').get();
-    const todos = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    const todos = snap.docs.map(d => ({ id: d.id, ...d.data(), carpeta: d.data().carpeta || S.CARPETA_DEFAULT }));
     const contadores = {
       NUEVO: todos.filter(m => m.estado === 'NUEVO').length,
       ACCION: todos.filter(m => m.requiereAccion && m.estado !== 'RESUELTO').length,
