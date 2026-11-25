@@ -114,8 +114,220 @@ async function resolverCredenciales(tenantId, cfg, deps = {}) {
   return { ok: true, creds: { accessToken: r.datos.accessToken } };
 }
 
-const idMail = (messageId, uidValidity, uid) =>
-  createHash('sha1').update(messageId || `${uidValidity}:${uid}`).digest('hex').slice(0, 24);
+/* ── Carpetas ───────────────────────────────────────────────────────────
+ * Config:  carpetas: ['INBOX', 'trabajo']                 (las que se revisan)
+ *          estadoCarpetas: [{ carpeta, uidValidity, ultimoUid }]   (uno por carpeta)
+ *
+ * El estado va en un ARRAY y no en un mapa por nombre: los nombres de carpeta pueden
+ * traer puntos o barras ("Clientes.2026", "INBOX/trabajo"), que en Firestore son
+ * separadores de ruta y romperían un update() con claves dinámicas.
+ *
+ * Las configs anteriores a esta versión no tienen carpetas ni estadoCarpetas: guardan
+ * un único ultimoUid/uidValidity que era, siempre, el de INBOX. leerCarpetas() las
+ * migra al leerlas (sin escribir nada); el primer sync después las persiste ya en el
+ * formato nuevo. Una vez que existe estadoCarpetas, los campos viejos se ignoran.
+ */
+const CARPETA_DEFAULT = 'INBOX';
+const MAX_CARPETAS = 20;
+
+/** INBOX no distingue mayúsculas en IMAP; el resto de los nombres sí, así que se respetan. */
+const nombreCarpeta = c => {
+  const s = String(c ?? '').trim();
+  return s.toUpperCase() === 'INBOX' ? 'INBOX' : s;
+};
+
+/**
+ * Devuelve { carpetas: string[], estado: Map<carpeta, { uidValidity, ultimoUid }> }.
+ * Pura: no toca Firestore. Sirve tanto para configs nuevas como para las viejas.
+ */
+function leerCarpetas(cfg = {}) {
+  const pedidas = Array.isArray(cfg.carpetas) ? cfg.carpetas : [];
+  const carpetas = [...new Set(pedidas.map(nombreCarpeta).filter(Boolean))];
+  if (!carpetas.length) carpetas.push(CARPETA_DEFAULT);
+
+  const estado = new Map();
+  if (Array.isArray(cfg.estadoCarpetas)) {
+    for (const e of cfg.estadoCarpetas) {
+      const c = nombreCarpeta(e && e.carpeta);
+      if (c) estado.set(c, { uidValidity: String(e.uidValidity || ''), ultimoUid: Number(e.ultimoUid) || 0 });
+    }
+  } else {
+    // Config anterior a las carpetas: el estado global era el de INBOX.
+    estado.set(CARPETA_DEFAULT, {
+      uidValidity: String(cfg.uidValidity || ''),
+      ultimoUid: Number(cfg.ultimoUid) || 0,
+    });
+  }
+  return { carpetas, estado };
+}
+
+/** Estado listo para guardar: solo de las carpetas elegidas (el de las quitadas se descarta). */
+function serializarEstado(estado, carpetas) {
+  return carpetas.map(carpeta => {
+    const e = estado.get(carpeta) || { uidValidity: '', ultimoUid: 0 };
+    return { carpeta, uidValidity: String(e.uidValidity || ''), ultimoUid: Number(e.ultimoUid) || 0 };
+  });
+}
+
+/**
+ * Una carpeta está "pendiente" mientras nunca se la revisó: sin estado, o con estado
+ * vacío (sin uidValidity). Es lo que la pantalla usa para ofrecer "Revisar últimos 30 días".
+ */
+function carpetasPendientes(cfg = {}) {
+  const { carpetas, estado } = leerCarpetas(cfg);
+  return carpetas.filter(c => {
+    const e = estado.get(c);
+    return !e || (!e.uidValidity && !e.ultimoUid);
+  });
+}
+
+/** Valores para una casilla nueva (o cambiada): vuelve a INBOX y borra todo el progreso. */
+const reinicioCarpetas = () => ({
+  carpetas: [CARPETA_DEFAULT],
+  estadoCarpetas: [],
+  // Campos de antes de las carpetas: con estadoCarpetas presente se ignoran, pero se
+  // dejan en cero para que nadie los lea como si siguieran vigentes.
+  ultimoUid: 0,
+  uidValidity: '',
+});
+
+/**
+ * Estado para "revisar de nuevo los últimos 30 días": pone ultimoUid en 0 en las
+ * carpetas indicadas (todas si no se indica ninguna) y deja el resto como estaba.
+ * Se conserva el uidValidity: sirve para detectar cambios más adelante.
+ */
+function estadoParaReescanear(cfg, carpetasObjetivo = null) {
+  const { carpetas, estado } = leerCarpetas(cfg);
+  const objetivo = carpetasObjetivo ? new Set(carpetasObjetivo.map(nombreCarpeta)) : new Set(carpetas);
+  const nuevo = new Map(estado);
+  for (const c of carpetas) {
+    if (objetivo.has(c)) nuevo.set(c, { uidValidity: (estado.get(c) || {}).uidValidity || '', ultimoUid: 0 });
+  }
+  return serializarEstado(nuevo, carpetas);
+}
+
+const tieneFlag_ = (flags, f) => (flags instanceof Set ? flags.has(f) : Array.isArray(flags) && flags.includes(f));
+
+/** De la respuesta de LIST deja solo carpetas que se pueden abrir, con un formato estable. */
+function normalizarListado(lista, cfg = {}) {
+  const { carpetas: elegidas } = leerCarpetas(cfg);
+  const sel = new Set(elegidas);
+  const pend = new Set(carpetasPendientes(cfg));
+  const vistas = new Set();
+  const salida = [];
+  for (const f of lista || []) {
+    const path = nombreCarpeta(f && f.path);
+    if (!path || vistas.has(path)) continue;
+    // \Noselect / \NonExistent son contenedores ("[Gmail]") que no se pueden abrir.
+    if (tieneFlag_(f.flags, '\\Noselect') || tieneFlag_(f.flags, '\\NonExistent')) continue;
+    vistas.add(path);
+    salida.push({
+      path,
+      nombre: f.name || path,
+      especial: f.specialUse || '',
+      seleccionada: sel.has(path),
+      pendiente: sel.has(path) && pend.has(path),
+    });
+  }
+  // INBOX primero, después las demás por nombre.
+  salida.sort((a, b) => (a.path === 'INBOX' ? -1 : b.path === 'INBOX' ? 1 : a.path.localeCompare(b.path, 'es')));
+  return salida;
+}
+
+/**
+ * Abre una conexión con las credenciales de la config (contraseña u OAuth).
+ * Devuelve { ok, client?, cfg?, status?, mensaje?, requiereReconexion? }. El llamador
+ * tiene que hacer logout() del cliente.
+ */
+async function conectarCasilla(tenantId, deps = {}) {
+  const snap = await refConfig(tenantId).get();
+  if (!snap.exists) return { ok: false, status: 404, mensaje: 'Primero conectá el correo.' };
+  const cfg = snap.data();
+  const desencriptar = deps.desencriptar || require('../helpers/cripto').desencriptar;
+  const cred = await resolverCredenciales(tenantId, cfg, { ...deps, desencriptar });
+  if (!cred.ok) {
+    return { ok: false, status: 400, mensaje: cred.mensaje, requiereReconexion: !!cred.requiereReconexion };
+  }
+  const factory = deps.factory || crearCliente;
+  let client = null;
+  try {
+    client = factory({ ...cfg, ...cred.creds });
+    await client.connect();
+    return { ok: true, client, cfg };
+  } catch (e) {
+    try { if (client) await client.logout(); } catch { /* ignore */ }
+    return { ok: false, status: 400, mensaje: traducirError(e) };
+  }
+}
+
+/** Carpetas de la casilla conectada, marcando cuáles se revisan. */
+async function listarCarpetas(tenantId, deps = {}) {
+  const c = await conectarCasilla(tenantId, deps);
+  if (!c.ok) return c;
+  try {
+    const lista = await c.client.list();
+    const carpetas = normalizarListado(lista, c.cfg);
+    return { ok: true, carpetas, seleccionadas: leerCarpetas(c.cfg).carpetas, pendientes: carpetasPendientes(c.cfg) };
+  } catch (e) {
+    return { ok: false, status: 400, mensaje: traducirError(e) };
+  } finally {
+    try { await c.client.logout(); } catch { /* ignore */ }
+  }
+}
+
+/**
+ * Guarda qué carpetas se revisan. Valida contra el LIST real de la casilla: no se puede
+ * elegir una carpeta que no existe (o que no se puede abrir). Las carpetas que siguen
+ * conservan su progreso; las quitadas lo pierden, así que si se vuelven a agregar se
+ * revisan de nuevo desde 30 días atrás (sin duplicar: el id del mail es estable).
+ */
+async function guardarCarpetas(tenantId, pedidas, deps = {}) {
+  if (!Array.isArray(pedidas) || pedidas.some(p => typeof p !== 'string')) {
+    return { ok: false, status: 400, mensaje: 'Mandá la lista de carpetas a revisar.' };
+  }
+  const elegidas = [...new Set(pedidas.map(nombreCarpeta).filter(Boolean))];
+  if (!elegidas.length) return { ok: false, status: 400, mensaje: 'Elegí al menos una carpeta para revisar.' };
+  if (elegidas.length > MAX_CARPETAS) {
+    return { ok: false, status: 400, mensaje: `Se pueden revisar hasta ${MAX_CARPETAS} carpetas.` };
+  }
+
+  const c = await conectarCasilla(tenantId, deps);
+  if (!c.ok) return c;
+  try {
+    const existentes = new Set(normalizarListado(await c.client.list(), c.cfg).map(f => f.path));
+    const faltan = elegidas.filter(e => !existentes.has(e));
+    if (faltan.length) {
+      return {
+        ok: false, status: 400,
+        mensaje: `${faltan.length === 1 ? 'La carpeta' : 'Las carpetas'} ${faltan.map(f => `"${f}"`).join(', ')} no ${faltan.length === 1 ? 'existe' : 'existen'} en la casilla.`,
+      };
+    }
+
+    const { carpetas: previas, estado } = leerCarpetas(c.cfg);
+    await refConfig(tenantId).update({
+      carpetas: elegidas,
+      estadoCarpetas: serializarEstado(estado, elegidas),
+    });
+    return { ok: true, carpetas: elegidas, nuevas: elegidas.filter(e => !previas.includes(e)) };
+  } catch (e) {
+    return { ok: false, status: 400, mensaje: traducirError(e) };
+  } finally {
+    try { await c.client.logout(); } catch { /* ignore */ }
+  }
+}
+
+// Id estable del mail guardado.
+//  - Con Message-ID, NO depende de la carpeta: el mismo mail que se mueve de INBOX a
+//    "trabajo" (cambia de UID) sigue siendo el mismo documento y no se duplica.
+//  - Sin Message-ID hace falta carpeta + uidValidity + uid, porque dos carpetas
+//    distintas pueden tener el mismo UID. Para INBOX se conserva la fórmula de antes
+//    de las carpetas, así un re-escaneo no duplica lo que ya estaba guardado.
+const idMail = (messageId, carpeta, uidValidity, uid) => {
+  const base = messageId || (carpeta === CARPETA_DEFAULT
+    ? `${uidValidity}:${uid}`
+    : `${carpeta}|${uidValidity}:${uid}`);
+  return createHash('sha1').update(base).digest('hex').slice(0, 24);
+};
 
 function linkWeb(cfg, messageId) {
   if (!messageId) return '';
@@ -177,30 +389,62 @@ async function sincronizarEmpresa(tenantId, deps = {}) {
       }).catch(() => {});
       return { ok: false, mensaje: cred.mensaje, requiereReconexion: !!cred.requiereReconexion };
     }
-    const client = factory({ ...cfg, ...cred.creds });
+
+    // ── Lectura: se recorre cada carpeta elegida, con su propio UID incremental ──
+    const { carpetas, estado } = leerCarpetas(cfg);
+    const estadoNuevo = new Map(estado);
     const nuevos = [];
-    let uidValidity, maxUid = Number(cfg.ultimoUid) || 0;
+    const avisosCarpeta = [];
+    let restante = MAX_POR_SYNC;   // el tope es del sync completo, no de cada carpeta
+    let fallidas = 0, ultimoError = null;
+    const diferidas = [];          // carpetas que no se llegaron a abrir por el tope
+    let quedanMas = false;         // hay mails sin leer en alguna carpeta (siguen el próximo sync)
+
+    const client = factory({ ...cfg, ...cred.creds });
     try {
       await client.connect();
-      const mb = await client.mailboxOpen('INBOX', { readOnly: true });
-      uidValidity = String(mb.uidValidity);
-      // Si el servidor reinició los UIDs, se vuelve a leer desde 30 días atrás.
-      if (cfg.uidValidity && String(cfg.uidValidity) !== uidValidity) maxUid = 0;
-      let uids;
-      if (maxUid > 0) uids = (await client.search({ uid: `${maxUid + 1}:*` }, { uid: true })) || [];
-      else uids = (await client.search({ since: new Date(Date.now() - DIAS_PRIMERA_SYNC * 86400000) }, { uid: true })) || [];
-      uids = uids.filter(u => u > maxUid).sort((a, b) => a - b).slice(-MAX_POR_SYNC);
-      if (uids.length) {
-        for await (const msg of client.fetch(uids, { uid: true, envelope: true, internalDate: true, source: { maxLength: MAX_BYTES_MAIL } }, { uid: true })) {
-          let parsed = null;
-          try { parsed = await parse(msg.source); } catch { /* mail truncado o raro: se usa el envelope */ }
-          nuevos.push(normalizarMensaje(msg, parsed));
-          if (msg.uid > maxUid) maxUid = msg.uid;
+      for (const carpeta of carpetas) {
+        if (restante <= 0) { diferidas.push(carpeta); continue; }
+        try {
+          // Solo lectura: nada se marca como leído, se borra ni se mueve.
+          const mb = await client.mailboxOpen(carpeta, { readOnly: true });
+          const uidValidity = String(mb.uidValidity);
+          const previo = estado.get(carpeta) || { uidValidity: '', ultimoUid: 0 };
+          let maxUid = Number(previo.ultimoUid) || 0;
+          // Si el servidor reinició los UIDs de ESTA carpeta, se vuelve a leer desde 30 días atrás.
+          if (previo.uidValidity && String(previo.uidValidity) !== uidValidity) maxUid = 0;
+
+          let uids;
+          if (maxUid > 0) uids = (await client.search({ uid: `${maxUid + 1}:*` }, { uid: true })) || [];
+          else uids = (await client.search({ since: new Date(Date.now() - DIAS_PRIMERA_SYNC * 86400000) }, { uid: true })) || [];
+          // 'N:*' siempre incluye el último mensaje aunque sea anterior a N: se filtra.
+          uids = uids.filter(u => u > maxUid).sort((a, b) => a - b);
+
+          // Si no entra todo, se toman los MÁS VIEJOS y el progreso avanza solo hasta ahí:
+          // el resto queda para el próximo sync y no se pierde nada.
+          if (uids.length > restante) { quedanMas = true; uids = uids.slice(0, restante); }
+
+          if (uids.length) {
+            for await (const msg of client.fetch(uids, { uid: true, envelope: true, internalDate: true, source: { maxLength: MAX_BYTES_MAIL } }, { uid: true })) {
+              let parsed = null;
+              try { parsed = await parse(msg.source); } catch { /* mail truncado o raro: se usa el envelope */ }
+              nuevos.push({ ...normalizarMensaje(msg, parsed), carpeta, uidValidity });
+              if (msg.uid > maxUid) maxUid = msg.uid;
+            }
+            restante -= uids.length;
+          }
+          estadoNuevo.set(carpeta, { uidValidity, ultimoUid: maxUid });
+        } catch (e) {
+          // Una carpeta que falla (borrada, renombrada) no tira abajo a las demás.
+          fallidas++; ultimoError = e;
+          avisosCarpeta.push(`No se pudo leer la carpeta "${carpeta}": ${e && e.mailboxMissing ? 'ya no existe en la casilla' : traducirError(e)}.`);
         }
       }
     } finally {
       try { await client.logout(); } catch { /* ignore */ }
     }
+    // Si fallaron TODAS, es un problema de la casilla y se informa como error.
+    if (carpetas.length && fallidas === carpetas.length) throw ultimoError;
 
     // ── Clasificación ──
     const decisiones = nuevos.map(m => C.decidirPorReglas(m, reglas));
@@ -211,12 +455,13 @@ async function sincronizarEmpresa(tenantId, deps = {}) {
       try { ia = await C.clasificarConIA(paraIA, llamarIA); }
       catch (e) { avisoIA = `IA no disponible (${String(e.message).slice(0, 80)}); se usaron solo reglas.`; ia = []; }
     }
-    const iaPorUid = new Map(paraIA.map((m, i) => [m.uid, ia[i] || null]));
+    // La clave es el propio objeto del mail: el UID solo no alcanza, se repite entre carpetas.
+    const iaPorMail = new Map(paraIA.map((m, i) => [m, ia[i] || null]));
 
     const pacientes = await cargarPacientes(tenantId);
     let guardados = 0, ignorados = 0;
     for (let i = 0; i < nuevos.length; i++) {
-      const m = nuevos[i], r = decisiones[i], res = iaPorUid.get(m.uid);
+      const m = nuevos[i], r = decisiones[i], res = iaPorMail.get(m);
       let trabajo, clasificadoPor;
       if (r.decision === 'IGNORAR') { trabajo = false; clasificadoPor = 'regla'; }
       else if (r.decision === 'TRABAJO') { trabajo = true; clasificadoPor = 'regla'; }
@@ -225,11 +470,11 @@ async function sincronizarEmpresa(tenantId, deps = {}) {
       if (!trabajo) { ignorados++; continue; }
 
       const pac = C.vincularPaciente(m, pacientes);
-      const id = idMail(m.messageId, uidValidity, m.uid);
+      const id = idMail(m.messageId, m.carpeta, m.uidValidity, m.uid);
       const docRef = col(tenantId, 'correo_mails').doc(id);
       if ((await docRef.get()).exists) continue;
       await docRef.set({
-        id, uid: m.uid, messageId: m.messageId, de: m.de, deNombre: m.deNombre, para: m.para,
+        id, uid: m.uid, carpeta: m.carpeta, messageId: m.messageId, de: m.de, deNombre: m.deNombre, para: m.para,
         asunto: m.asunto, fecha: m.fecha, extracto: m.texto.replace(/\n{3,}/g, '\n\n').slice(0, 1500),
         adjuntos: m.adjuntos,
         categoria: res?.categoria || C.categoriaHeuristica(m),
@@ -242,13 +487,19 @@ async function sincronizarEmpresa(tenantId, deps = {}) {
       guardados++;
     }
 
+    const avisoTope = (diferidas.length || quedanMas)
+      ? `Se llegó al tope de ${MAX_POR_SYNC} mails por sincronización${diferidas.length ? ` (quedaron para la próxima: ${diferidas.map(d => `"${d}"`).join(', ')})` : ''}; el resto entra en las próximas.`
+      : '';
+    const aviso = [avisoIA, ...avisosCarpeta, avisoTope].filter(Boolean).join(' · ');
+
     const stats = { revisados: nuevos.length, guardados, ignorados };
     await ref.update({
-      uidValidity: uidValidity || cfg.uidValidity || '', ultimoUid: maxUid,
-      ultimaSync: new Date().toISOString(), error: '', aviso: avisoIA, stats,
+      // Se persiste ya en el formato con carpetas: así las configs viejas quedan migradas.
+      carpetas, estadoCarpetas: serializarEstado(estadoNuevo, carpetas),
+      ultimaSync: new Date().toISOString(), error: '', aviso, stats,
       requiereReconexion: false,
     });
-    return { ok: true, ...stats, aviso: avisoIA };
+    return { ok: true, ...stats, aviso };
   } catch (e) {
     const mensaje = traducirError(e);
     try { await ref.update({ error: mensaje, ultimaSync: new Date().toISOString() }); } catch { /* ignore */ }
@@ -288,4 +539,8 @@ module.exports = {
   probarConexion, sincronizarEmpresa, sincronizarTodas, iniciarProgramador,
   normalizarMensaje, traducirError, refConfig, crearCliente, resolverCredenciales,
   MENSAJE_RECONEXION,
+  // carpetas
+  CARPETA_DEFAULT, MAX_POR_SYNC, idMail, nombreCarpeta, leerCarpetas, serializarEstado,
+  carpetasPendientes, reinicioCarpetas, estadoParaReescanear, normalizarListado,
+  listarCarpetas, guardarCarpetas,
 };

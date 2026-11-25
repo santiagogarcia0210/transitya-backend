@@ -167,7 +167,7 @@ router.get('/:proveedor/callback', async (req, res) => {
       requiereReconexion: false,
       usarIA: previo.usarIA !== false,
       reglas: previo.reglas || C.REGLAS_DEFAULT,
-      ...(cambioCasilla || !previo.user ? { ultimoUid: 0, uidValidity: '' } : {}),
+      ...(cambioCasilla || !previo.user ? S.reinicioCarpetas() : {}),
       conectadoEn: previo.conectadoEn || new Date().toISOString(),
       actualizadoEn: new Date().toISOString(),
     });
