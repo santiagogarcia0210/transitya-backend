@@ -2,6 +2,7 @@ const router = require('express').Router();
 const Anthropic = require('@anthropic-ai/sdk');
 const { verifyToken, requireAdmin } = require('../middleware/auth');
 const { normalizarText_, fechaHoyAR, col, randomUUID } = require('../utils');
+const { normalizarFecha, fechaToDate, fechaDoc, ordenarPorFechaDesc } = require('../utils/fechas');
 const { subirFoto } = require('../helpers/storage');
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -34,19 +35,7 @@ async function procesarComprobante(data, tenantId, id) {
   }
 }
 
-const fechaSort = (f) => {
-  const p = String(f || '').split('/');
-  if (p.length < 3) return 0;
-  const y = p[2].length === 2 ? '20' + p[2] : p[2];
-  return Number(`${y}${p[1].padStart(2, '0')}${p[0].padStart(2, '0')}`);
-};
-
-// ISO yyyy-MM-dd → dd/MM/yyyy
-const isoToDMY = (f) => {
-  if (!f || !f.includes('-')) return f;
-  const [y, m, d] = f.split('-');
-  return `${d}/${m}/${y}`;
-};
+const MSG_FECHA = 'La fecha no es válida. Usá el formato dd/MM/yyyy (por ejemplo 05/11/2026).';
 
 // GET /duplicado must be before GET /:id
 router.get('/duplicado', verifyToken, async (req, res) => {
@@ -85,20 +74,20 @@ router.get('/', verifyToken, async (req, res) => {
       todos = todos.filter(doc => normalizarText_(Object.values(doc).join(' ')).includes(qn));
     }
     if (desde || hasta) {
-      const d = desde ? new Date(desde) : null;
-      const h = hasta ? new Date(hasta) : null;
+      // desde/hasta llegan en ISO (input type=date); fechaToDate entiende ISO y dd/MM/yyyy.
+      const d = fechaToDate(desde);
+      const h = fechaToDate(hasta);
       todos = todos.filter(doc => {
-        const p = String(doc.fecha || doc.FECHA || '').split('/');
-        if (p.length < 3) return false;
-        const y  = Number(p[2].length === 2 ? '20' + p[2] : p[2]);
-        const df = new Date(y, Number(p[1]) - 1, Number(p[0]));
+        const df = fechaToDate(fechaDoc(doc));
+        if (!df) return false;
         if (d && df < d) return false;
         if (h && df > h) return false;
         return true;
       });
     }
 
-    todos.sort((a, b) => fechaSort(b.fecha || b.FECHA) - fechaSort(a.fecha || a.FECHA));
+    // Fecha desc; a igual fecha, el cargado más tarde primero. Sin fecha válida, al final.
+    ordenarPorFechaDesc(todos);
 
     const pp    = Math.max(1, parseInt(limit) || 50);
     const pg    = Math.max(1, parseInt(page) || 1);
@@ -202,7 +191,11 @@ router.post('/', verifyToken, async (req, res) => {
   try {
     const data = { ...req.body };
     const id = randomUUID();
-    const fecha = isoToDMY(data.fecha || '') || fechaHoyAR();
+    // Sin fecha: hoy (como siempre). Con fecha: se normaliza a dd/MM/yyyy; si no se entiende, 400
+    // en vez de guardar un valor que después no se puede ordenar ni filtrar.
+    const sinFecha = data.fecha === undefined || data.fecha === null || String(data.fecha).trim() === '';
+    const fecha = sinFecha ? fechaHoyAR() : normalizarFecha(data.fecha);
+    if (!fecha) return res.status(400).json({ ok: false, mensaje: MSG_FECHA });
     await procesarComprobante(data, req.tenantId, id);
     const doc = {
       ID:              id,
@@ -236,6 +229,11 @@ router.put('/:id', verifyToken, async (req, res) => {
         return res.status(403).json({ ok: false, mensaje: 'Sin permisos' });
     }
     const data = { ...req.body };
+    if (data.fecha !== undefined) {
+      const fecha = normalizarFecha(data.fecha);
+      if (!fecha) return res.status(400).json({ ok: false, mensaje: MSG_FECHA });
+      data.fecha = fecha;
+    }
     await procesarComprobante(data, req.tenantId, req.params.id);
     await col(req.tenantId, 'remitos').doc(req.params.id).update(data);
     res.json({ ok: true });
@@ -274,19 +272,17 @@ router.get('/pdf-data', verifyToken, async (req, res) => {
       remitos = remitos.filter(r => normalizarText_(r.chofer || r.CHOFER || '') === cn);
     }
     if (desde || hasta) {
-      const dDesde = desde ? new Date(desde) : null;
-      const dHasta = hasta ? new Date(hasta) : null;
+      const dDesde = fechaToDate(desde);
+      const dHasta = fechaToDate(hasta);
       remitos = remitos.filter(r => {
-        const p = String(r.fecha || r.FECHA || '').split('/');
-        if (p.length < 3) return false;
-        const y  = Number(p[2].length === 2 ? '20' + p[2] : p[2]);
-        const fd = new Date(y, Number(p[1]) - 1, Number(p[0]));
+        const fd = fechaToDate(fechaDoc(r));
+        if (!fd) return false;
         if (dDesde && fd < dDesde) return false;
         if (dHasta && fd > dHasta) return false;
         return true;
       });
     }
-    remitos.sort((a, b) => fechaSort(b.fecha || b.FECHA) - fechaSort(a.fecha || a.FECHA));
+    ordenarPorFechaDesc(remitos);
 
     const totalLitros = remitos.reduce((s, r) => s + (Number(r.combustible || r.COMBUSTIBLE || 0)), 0);
     const totalMonto  = remitos.reduce((s, r) => {

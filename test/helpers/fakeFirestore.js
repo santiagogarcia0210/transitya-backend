@@ -16,6 +16,7 @@ function fakeDb() {
       docs.set(ruta, { ...docs.get(ruta), ...structuredClone(v) });
     },
     async delete() { docs.delete(ruta); },
+    collection: (sub) => coleccion(ruta + '/' + sub),
   });
 
   const coleccion = (base) => ({
@@ -33,7 +34,22 @@ function fakeDb() {
     docs,
     coleccion,
     ref,
-    collection: (nombre) => ({ doc: (id) => ref(nombre + '/' + id) }),
+    collection: (nombre) => coleccion(nombre),
+    /** Tamaño de cada batch confirmado, para comprobar que se respeta el límite. */
+    commits: [],
+    batch() {
+      const ops = [];
+      const self = this;
+      return {
+        update(r, v) { ops.push(['update', r, v]); },
+        set(r, v) { ops.push(['set', r, v]); },
+        async commit() {
+          if (ops.length > 500) throw new Error('INVALID_ARGUMENT: un batch admite como máximo 500 operaciones');
+          for (const [tipo, r, v] of ops) await (tipo === 'update' ? r.update(v) : r.set(v));
+          self.commits.push(ops.length);
+        },
+      };
+    },
     async runTransaction(fn) {
       return fn({
         async get(r) { return r.get(); },

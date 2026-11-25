@@ -3,6 +3,7 @@ const Anthropic = require('@anthropic-ai/sdk');
 const { verifyToken, requireAdmin, requireModulo } = require('../middleware/auth');
 const { normalizarText_, parseMonto_, esMesDMY, col, randomUUID } = require('../utils');
 const { subirFoto } = require('../helpers/storage');
+const { normalizarFecha, fechaToDate, fechaDoc, ordenarPorFechaDesc } = require('../utils/fechas');
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -37,21 +38,7 @@ async function procesarComprobante(data, tenantId, id) {
   }
 }
 
-// Parsear dd/MM/yyyy → número YYYYMMDD para ordenar
-const fechaSort = (f) => {
-  const p = String(f || '').split('/');
-  if (p.length < 3) return 0;
-  const y = p[2].length === 2 ? '20' + p[2] : p[2];
-  return Number(`${y}${p[1].padStart(2, '0')}${p[0].padStart(2, '0')}`);
-};
-
-// Parsear dd/MM/yyyy → Date para comparar rangos
-const fechaToDate = (f) => {
-  const p = String(f || '').split('/');
-  if (p.length < 3) return null;
-  const y = Number(p[2].length === 2 ? '20' + p[2] : p[2]);
-  return new Date(y, Number(p[1]) - 1, Number(p[0]));
-};
+const MSG_FECHA = 'La fecha no es válida. Usá el formato dd/MM/yyyy (por ejemplo 05/11/2026).';
 
 router.get('/', verifyToken, requireModulo('egresos'), async (req, res) => {
   try {
@@ -93,10 +80,11 @@ router.get('/', verifyToken, requireModulo('egresos'), async (req, res) => {
       });
     }
     if (desde || hasta) {
-      const d = desde ? new Date(desde) : null;
-      const h = hasta ? new Date(hasta) : null;
+      // desde/hasta llegan en ISO (input type=date); fechaToDate entiende ISO y dd/MM/yyyy.
+      const d = fechaToDate(desde);
+      const h = fechaToDate(hasta);
       todos = todos.filter(doc => {
-        const df = fechaToDate(doc.fecha || doc.FECHA || '');
+        const df = fechaToDate(fechaDoc(doc));
         if (!df) return false;
         if (d && df < d) return false;
         if (h && df > h) return false;
@@ -104,8 +92,8 @@ router.get('/', verifyToken, requireModulo('egresos'), async (req, res) => {
       });
     }
 
-    // Sort by FECHA desc
-    todos.sort((a, b) => fechaSort(b.fecha || b.FECHA) - fechaSort(a.fecha || a.FECHA));
+    // Fecha desc; a igual fecha, el cargado más tarde primero. Sin fecha válida, al final.
+    ordenarPorFechaDesc(todos);
 
     // Pagination
     const pp  = Math.max(1, parseInt(limit) || 50);
@@ -129,12 +117,16 @@ router.get('/', verifyToken, requireModulo('egresos'), async (req, res) => {
 router.get('/duplicado', verifyToken, requireModulo('egresos'), async (req, res) => {
   try {
     const { fecha, monto } = req.query;
+    // Las dos fechas se normalizan antes de comparar: 2026-11-05 y 05/11/2026 son el mismo día.
+    // Si la recibida no se entiende no hay nada que comparar: dos fechas inválidas darían ''
+    // y se igualarían (falso duplicado).
+    const df = normalizarFecha(fecha);
+    if (!df) return res.json({ ok: true, duplicado: false, cantidad: 0 });
     const snap = await col(req.tenantId, 'egresos').get();
-    const df = normalizarText_(String(fecha || ''));
     const dm = String(monto || '').trim();
     const encontrados = snap.docs.filter(d => {
       const doc = d.data();
-      return normalizarText_(doc.fecha || doc.FECHA || '') === df &&
+      return fechaDoc(doc) === df &&
              String(doc.monto || doc.MONTO || '').trim() === dm;
     });
     res.json({ ok: true, duplicado: encontrados.length > 0, cantidad: encontrados.length });
@@ -231,6 +223,13 @@ router.post('/escanear', verifyToken, async (req, res) => {
 router.post('/', verifyToken, requireModulo('egresos'), async (req, res) => {
   try {
     const data = { ...req.body };
+    // La fecha es obligatoria y se guarda siempre como dd/MM/yyyy (el input type=date manda ISO).
+    const fecha = normalizarFecha(data.fecha);
+    if (!fecha) {
+      const falta = data.fecha === undefined || data.fecha === null || String(data.fecha).trim() === '';
+      return res.status(400).json({ ok: false, mensaje: falta ? 'Falta la fecha del egreso.' : MSG_FECHA });
+    }
+    data.fecha = fecha;
     const isAdmin = req.user.rol === 'admin' || req.user.rol === 'administrador';
     // Choferes: siempre auto-asignados. Admins: respetar el chofer elegido; fallback a su email si no enviaron ninguno.
     if (!isAdmin || !data.chofer) {
@@ -258,6 +257,11 @@ router.put('/:id', verifyToken, requireModulo('egresos'), async (req, res) => {
         return res.status(403).json({ ok: false, mensaje: 'Sin permisos' });
     }
     const data = { ...req.body };
+    if (data.fecha !== undefined) {
+      const fecha = normalizarFecha(data.fecha);
+      if (!fecha) return res.status(400).json({ ok: false, mensaje: MSG_FECHA });
+      data.fecha = fecha;
+    }
     await procesarComprobante(data, req.tenantId, req.params.id);
     await col(req.tenantId, 'egresos').doc(req.params.id).update(data);
     res.json({ ok: true });
