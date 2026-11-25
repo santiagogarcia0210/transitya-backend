@@ -62,8 +62,10 @@ const ordenarPorFecha = (docs) => {
 };
 
 /* ── Carga de usuarios activos con rol=chofer ─────────────────────────────── */
-async function cargarChoferes(tenantId, soloEmail) {
-  const snap = await col(tenantId, 'usuarios').get();
+// colFn es inyectable (por defecto el Firestore real) para poder reutilizar esta misma definición de
+// "chofer activo" en otros servicios y probarlos sin base de datos.
+async function cargarChoferes(tenantId, soloEmail, colFn = col) {
+  const snap = await colFn(tenantId, 'usuarios').get();
   let choferes = snap.docs
     .map(d => ({ uid: d.id, ...d.data() }))
     .filter(u => {
@@ -324,4 +326,4 @@ async function calcularResumenMensual(tenantId, mesISO, soloEmail = null) {
   return { mes: mesISO, choferes: conActividad, _logs: logs };
 }
 
-module.exports = { calcularResumenDiario, calcularResumenMensual, isoToDMY };
+module.exports = { calcularResumenDiario, calcularResumenMensual, isoToDMY, cargarChoferes };

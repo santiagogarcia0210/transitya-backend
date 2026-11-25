@@ -60,4 +60,47 @@ function ocurrencias(tarea, hechos, ahora = new Date()) {
 const ORDEN = { VENCIDO: 0, PROXIMO: 1, PENDIENTE: 2, HECHO: 3 };
 const ordenar = (a, b) => (ORDEN[a.estado] - ORDEN[b.estado]) || ((a.diffDias ?? 999) - (b.diffDias ?? 999));
 
-module.exports = { ocurrencias, ocurrenciaEn, ordenar };
+/* ── Piezas del panel administrativo que también usa la pizarra del Inicio ───────────────────
+ * Estaban escritas dentro de GET /panel. Viven acá, puras, para que el panel y la pizarra
+ * calculen exactamente lo mismo y no haya dos versiones de la misma regla. */
+
+/**
+ * Vencimientos de personas y vehículos que ya vencieron o están por vencer, del más urgente al menos.
+ * lista: [{ id, ...datos }] · ahora: se puede pasar para fijar "hoy" (la pizarra usa el de Argentina).
+ */
+function vencimientosCriticos(lista, ahora = new Date()) {
+  return lista
+    .filter(v => v.estado !== 'ELIMINADO')
+    .map(v => ({ id: v.ID || v.id, descripcion: v.descripcion || '', persona: v.persona || v.chofer || '',
+      tipo: v.tipo || '', fechaVenc: v.fechaVenc || '', ...calcEstado(v.fechaVenc, v.diasAviso, ahora) }))
+    .filter(v => v.estado === 'VENCIDO' || v.estado === 'PROXIMO')
+    .sort((a, b) => a.diffDias - b.diffDias);
+}
+
+const ORDEN_DOCS = { VENCIDO: 0, FALTA: 1, PROXIMO: 2, SIN_FECHA: 3, SIN_OBRA_SOCIAL: 4 };
+/** Ordena EN EL LUGAR las alertas de documentos de pacientes: vencidos, faltantes, por vencer, el resto. */
+function ordenarAlertasDocs(alertas) {
+  return alertas.sort((a, b) => (ORDEN_DOCS[a.tipo] - ORDEN_DOCS[b.tipo]) || ((a.diffDias ?? 999) - (b.diffDias ?? 999)));
+}
+
+const URGENCIA_MAIL = { ALTA: 0, MEDIA: 1, BAJA: 2 };
+/**
+ * De los mails pendientes (no resueltos), los que piden acción o son de urgencia alta.
+ * Devuelve { conAccion, total, destacados }: conAccion cuenta los que piden acción, total los
+ * destacados (acción o urgencia alta) y destacados es la lista, la más urgente y reciente primero.
+ */
+function correoDestacados(mailsPend, limite = 5) {
+  const lista = mailsPend
+    .filter(m => m.requiereAccion || m.urgencia === 'ALTA')
+    .sort((a, b) => (URGENCIA_MAIL[a.urgencia] ?? 2) - (URGENCIA_MAIL[b.urgencia] ?? 2) || String(b.fecha).localeCompare(String(a.fecha)));
+  return {
+    conAccion: mailsPend.filter(m => m.requiereAccion).length,
+    total: lista.length,
+    destacados: lista.slice(0, limite).map(m => ({
+      id: m.id, asunto: m.asunto, deNombre: m.deNombre || m.de, resumen: m.resumen, accion: m.accion,
+      urgencia: m.urgencia, categoria: m.categoria, fecha: m.fecha, pacienteNombre: m.pacienteNombre || '',
+    })),
+  };
+}
+
+module.exports = { ocurrencias, ocurrenciaEn, ordenar, vencimientosCriticos, ordenarAlertasDocs, correoDestacados };
