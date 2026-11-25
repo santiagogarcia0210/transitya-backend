@@ -52,27 +52,71 @@ function limpiarOS(body) {
   };
 }
 
+// ── Qué haría la semilla sobre lo que ya hay en la empresa ──────────────────────────────────────
+// Firestore no conserva el orden de las claves de un mapa, así que para comparar contenido se
+// ordenan recursivamente (los arreglos sí conservan su orden).
+const canonico = v => (Array.isArray(v) ? v.map(canonico)
+  : (v && typeof v === 'object') ? Object.fromEntries(Object.keys(v).sort().map(k => [k, canonico(v[k])]))
+  : v);
+const CAMPOS_CONTENIDO = ['nombre', 'alias', 'presentacion', 'requisitos', 'notas'];
+const contenidoDe = o => canonico(Object.fromEntries(CAMPOS_CONTENIDO.map(k => [k, o[k]])));
+const mismoContenido = (a, b) => JSON.stringify(contenidoDe(a)) === JSON.stringify(contenidoDe(b));
+
+/**
+ * existentes: Map id -> documento. Devuelve:
+ *   nuevas       → obras sociales del borrador que la empresa todavía no tiene.
+ *   actualizables → obras ya cargadas por la semilla que NUNCA se tocaron (borrador: true y sin
+ *                   actualizadoEn: el PUT siempre deja actualizadoEn) y cuyo contenido difiere de
+ *                   la versión actual. Todo lo que alguien editó o revisó queda como está.
+ */
+function planSemilla(existentes) {
+  const nuevas = [], actualizables = [];
+  for (const os of BORRADOR) {
+    const ya = existentes.get(os.id);
+    if (!ya) nuevas.push(os.id);
+    else if (ya.borrador === true && !ya.actualizadoEn && !mismoContenido(ya, limpiarOS(os))) actualizables.push(os.id);
+  }
+  return { nuevas, actualizables };
+}
+const conNombre = ids => ids.map(id => ({ id, nombre: BORRADOR.find(o => o.id === id).nombre }));
+
 router.get('/', verifyToken, requireAdmin, async (req, res) => {
   try {
     const snap = await col(req.tenantId, 'requisitos_os').get();
     const obras = snap.docs.map(d => ({ id: d.id, ...d.data() }))
       .sort((a, b) => String(a.nombre).localeCompare(String(b.nombre)));
-    res.json({ ok: true, obras });
+    // Lo que la semilla cargaría o actualizaría: la pantalla ofrece el botón solo si hay algo.
+    const plan = planSemilla(new Map(obras.map(o => [o.id, o])));
+    res.json({ ok: true, obras, semilla: { nuevas: conNombre(plan.nuevas), actualizables: conNombre(plan.actualizables) } });
   } catch (e) { errHandler(res, req, e); }
 });
 
-// Carga el borrador inicial. No pisa obras sociales que ya existan.
+// Carga los requisitos oficiales / el borrador inicial.
+//   - Agrega las obras sociales que la empresa todavía no tiene.
+//   - Actualiza solo las que la propia semilla cargó y nadie tocó desde entonces (borrador sin
+//     editar). Así una empresa que cargó una versión anterior recibe los datos nuevos sin perder
+//     nada propio. No pisa nada que se haya editado o marcado como revisado.
 router.post('/semilla', verifyToken, requireAdmin, async (req, res) => {
   try {
     const ref = col(req.tenantId, 'requisitos_os');
-    let creadas = 0;
+    const snap = await ref.get();
+    const existentes = new Map(snap.docs.map(d => [d.id, d.data()]));
+    const { nuevas, actualizables } = planSemilla(existentes);
+    const ahora = new Date().toISOString();
     for (const os of BORRADOR) {
-      const doc = ref.doc(os.id);
-      if ((await doc.get()).exists) continue;
-      await doc.set({ ...limpiarOS(os), id: os.id, borrador: true, creadoEn: new Date().toISOString() });
-      creadas++;
+      if (nuevas.includes(os.id)) {
+        await ref.doc(os.id).set({ ...limpiarOS(os), id: os.id, borrador: true, creadoEn: ahora });
+      } else if (actualizables.includes(os.id)) {
+        // set() reemplaza el documento entero (no quedan campos de la versión anterior); se
+        // conserva la fecha de creación original.
+        await ref.doc(os.id).set({ ...limpiarOS(os), id: os.id, borrador: true, creadoEn: existentes.get(os.id).creadoEn || ahora });
+      }
     }
-    res.json({ ok: true, creadas, mensaje: creadas ? `${creadas} obra(s) social(es) cargadas.` : 'Ya estaban cargadas.' });
+    const creadas = nuevas.length, actualizadas = actualizables.length;
+    const partes = [];
+    if (creadas) partes.push(`${creadas} obra(s) social(es) cargadas`);
+    if (actualizadas) partes.push(`${actualizadas} actualizada(s) con los requisitos oficiales`);
+    res.json({ ok: true, creadas, actualizadas, mensaje: partes.length ? partes.join(' y ') + '.' : 'Ya estaban cargadas.' });
   } catch (e) { errHandler(res, req, e); }
 });
 
@@ -110,3 +154,5 @@ router.delete('/:id', verifyToken, requireAdmin, async (req, res) => {
 
 module.exports = router;
 module.exports.limpiarRequisitos = limpiarRequisitos;
+module.exports.limpiarOS = limpiarOS;
+module.exports.planSemilla = planSemilla;

@@ -1,17 +1,33 @@
-// BORRADOR de requisitos por obra social para traslado de personas con discapacidad.
-// Fuentes: práctica actual de Transporte Flores (recibo de Presentación Docs de Incluir Salud),
-// Res. SSSalud 360/2022 (Mecanismo de Integración, aplica a obras sociales nacionales como OSPRERA)
-// e instructivos públicos de discapacidad 2024-2025 de obras sociales nacionales.
-// TODO lo marcado "confirmar" debe validarse con cada obra social / UGP antes de usarse en serio.
+// Requisitos por obra social para traslado de personas con discapacidad.
+//
+// Estado de cada obra social:
+//   - Incluir Salud (paciente), OSPRERA (paciente/prestador) y Subsidio IPSST: cargados desde
+//     documentos oficiales recibidos en nov 2026. Lo que el documento no aclara está marcado
+//     "Vigencia no especificada: confirmar con la obra social".
+//   - PAMI y los requisitos mensuales / de prestador conservados: BORRADOR de la práctica actual
+//     de Transporte Flores y de instructivos públicos 2024-2025. Se validan con cada obra social.
 //
 // vencimiento:
-//   'no'        → el documento no vence (DNI)
+//   'no'        → el documento no vence (DNI) o no se sabe: ver la nota del requisito
 //   'fecha_doc' → vence en la fecha impresa en el documento (CUD, autorización)
 //   'meses'     → vence N meses después de la fecha de emisión (vigenciaMeses)
+//
+// IMPORTANTE: la carpeta del paciente (services/legajos.js) une cada documento subido con su
+// requisito por `key`. Cambiar la key de un requisito deja sin enlazar los documentos que ya se
+// subieron con la anterior, así que donde el documento es el mismo se conservó la key de antes.
 
 const R = (key, nombre, categoria, vencimiento, vigenciaMeses, extra = {}) => ({
   key, nombre, categoria, vencimiento, vigenciaMeses, obligatorio: true, condicion: '', notas: '', ...extra,
 });
+
+// Para los documentos oficiales: si la vigencia no está indicada (vencimiento 'no'), se deja
+// asentado en la nota para no confundirlo con un documento que de verdad no vence.
+const SIN_VIGENCIA = 'Vigencia no especificada: confirmar con la obra social';
+const RO = (key, nombre, categoria, vencimiento, vigenciaMeses, extra = {}) =>
+  R(key, nombre, categoria, vencimiento, vigenciaMeses, {
+    ...extra,
+    notas: vencimiento === 'no' ? [extra.notas, SIN_VIGENCIA].filter(Boolean).join(' ') : (extra.notas || ''),
+  });
 
 const BASE_PACIENTE = [
   R('dni', 'DNI del paciente (frente y dorso)', 'paciente', 'no', 0),
@@ -49,6 +65,75 @@ const BASE_MENSUAL = [
     { notas: 'Fecha de emisión dentro del período facturado. Detallar paciente, DNI, km y período.' }),
 ];
 
+// ── Incluir Salud: paciente según el documento oficial (10 requisitos, 9 obligatorios) ──────────
+const INCLUIR_PACIENTE = [
+  RO('nota_solicitud', 'Nota manuscrita original del beneficiario, padre o tutor, solicitando la prestación', 'paciente', 'no', 0),
+  RO('dni', 'Fotocopia DNI del titular de derecho y del apoderado (acreditando vínculo)', 'paciente', 'no', 0),
+  RO('cud', 'Fotocopia del Certificado Único de Discapacidad vigente a la fecha de solicitud', 'paciente', 'fecha_doc', 0,
+    { notas: 'Debe estar vigente a la fecha de solicitud.' }),
+  RO('boleta_haberes', 'Fotocopia de la última Orden de Pago Previsional (boleta de cobro)', 'paciente', 'no', 0),
+  RO('pedido_medico', 'Prescripción médica original, indicando modalidad y período, con historia clínica firmada por profesional competente (diagnóstico, estado clínico actual y pronóstico)', 'paciente', 'no', 0),
+  RO('informe_social', 'Informe de Trabajador Social matriculado', 'paciente', 'no', 0),
+  RO('certificado_escolar', 'Certificado de incorporación y/o asistencia escolar', 'paciente', 'no', 0,
+    { obligatorio: false, condicion: 'Solo para escuelas públicas' }),
+  RO('presupuesto', 'Presupuesto de prestador de transporte habilitado con mapa georreferenciado', 'paciente', 'no', 0),
+  RO('fim', 'Formulario de Medida de Independencia Funcional (FIM)', 'paciente', 'no', 0),
+  RO('consolidado_egov', 'Autorización e-Gov del Plan de Trabajo al Centro', 'paciente', 'no', 0),
+];
+
+// ── OSPRERA: expedientes de discapacidad 2025, prestación de transporte ─────────────────────────
+const OSPRERA_PACIENTE = [
+  RO('recibos_titular', 'Copia de recibo de sueldo (uno de los tres meses anteriores al inicio del tratamiento)', 'paciente', 'meses', 3,
+    { notas: 'Vale un recibo de cualquiera de los tres meses anteriores al inicio del tratamiento.' }),
+  RO('dni', 'Copia DNI del titular y del beneficiario', 'paciente', 'no', 0),
+  RO('dj_carnet_os', 'Copia de declaración jurada/carnet de la obra social', 'paciente', 'no', 0),
+  RO('cud', 'Certificado de discapacidad vigente', 'paciente', 'fecha_doc', 0),
+  RO('historia_clinica', 'Resumen de historia clínica firmado por médico tratante', 'paciente', 'no', 0),
+  RO('pedido_medico', 'Prescripción de las prestaciones firmada por médico tratante', 'paciente', 'no', 0,
+    { notas: 'Debe justificar la imposibilidad de usar transporte público. Sin tachaduras, con DNI, período escrito, sello y firma legible.' }),
+  RO('conformidad_diagrama', 'Conformidad del diagrama de traslados firmada por la persona con discapacidad, familiar o tutor', 'paciente', 'no', 0,
+    { notas: 'Incluye la declaración jurada de no haber accedido al beneficio de la Ley 19.279.' }),
+  RO('presupuesto', 'Presupuesto de transporte con diagrama de traslados, firmado por la persona, familiar o tutor', 'paciente', 'no', 0,
+    { notas: 'Origen y destino de cada viaje, km por viaje según el programa de georreferenciamiento y cronograma de traslado.' }),
+  RO('google_maps', 'Google Maps firmado por el prestador y la persona o tutor', 'paciente', 'no', 0),
+  RO('planilla_instituciones', 'Planilla de especialidades / instituciones / transporte', 'paciente', 'no', 0),
+  RO('fim', 'Formulario de Escala FIM', 'paciente', 'no', 0,
+    { obligatorio: false, condicion: 'Solo si hay dependencia',
+      notas: 'El adicional por dependencia es del 35%, sujeto a evaluación. Debe confeccionarlo el médico tratante o Lic. en Terapia Ocupacional.' }),
+  RO('certificado_policial', 'Certificado policial de residencia del paciente', 'paciente', 'no', 0,
+    { obligatorio: false, condicion: 'Solo si los traslados superan 1500 km mensuales' }),
+];
+
+const OSPRERA_PRESTADOR = [
+  RO('p_habilitacion', 'Habilitación', 'prestador', 'fecha_doc', 0),
+  RO('p_seguro', 'Póliza de seguro', 'prestador', 'fecha_doc', 0),
+  RO('p_vtv', 'Verificación Técnica Vehicular', 'prestador', 'fecha_doc', 0),
+  RO('p_licencia', 'Licencia de conducir', 'prestador', 'fecha_doc', 0),
+  RO('p_cuit', 'Constancia de CUIT', 'prestador', 'no', 0),
+  RO('p_cbu', 'CBU', 'prestador', 'no', 0,
+    { obligatorio: false, condicion: 'Solo prestador nuevo' }),
+];
+
+// ── Subsidio IPSST: nota al Instituto de Previsión y Seguridad Social de Tucumán ────────────────
+const IPSST_PACIENTE = [
+  RO('cud', 'Certificado de discapacidad', 'paciente', 'fecha_doc', 0),
+  RO('pedido_medico', 'Pedido médico', 'paciente', 'no', 0),
+  RO('informe_centro', 'Informe del centro o instituto al que asiste', 'paciente', 'no', 0),
+  RO('certificado_afiliacion', 'Certificado de afiliación', 'paciente', 'no', 0),
+  RO('acta_nacimiento', 'Acta de nacimiento', 'paciente', 'no', 0),
+  RO('presupuesto', 'Presupuesto emitido por la empresa transportista', 'paciente', 'no', 0),
+  RO('mapa_recorrido', 'Mapa indicativo del recorrido', 'paciente', 'no', 0),
+];
+
+const IPSST_PRESTADOR = [
+  RO('p_habilitacion', 'Habilitación del servicio emitida por SI.PRO.SA.', 'prestador', 'fecha_doc', 0),
+  RO('p_licencia', 'Carnet de conducir del chofer y DNI', 'prestador', 'fecha_doc', 0),
+  RO('p_vtv', 'VTV del vehículo', 'prestador', 'fecha_doc', 0),
+  RO('p_titulo_dominio', 'Título de dominio', 'prestador', 'no', 0),
+  RO('p_seguro', 'Seguro del rodado', 'prestador', 'fecha_doc', 0),
+  RO('p_constancias_tributarias', 'Constancias tributarias ARCA-DGR', 'prestador', 'no', 0),
+];
+
 module.exports = [
   {
     id: 'incluir-salud',
@@ -60,18 +145,12 @@ module.exports = [
       notas: 'Planilla de conformidad efectiva de la prestación + DJ-ESC107 por paciente, con la factura. Tope 880 km/mes por paciente.',
     },
     requisitos: [
-      R('nota_solicitud', 'Nota manuscrita de solicitud de autorización de transporte', 'paciente', 'meses', 12),
-      ...BASE_PACIENTE.filter(r => !['conformidad_diagrama', 'constancia_institucion'].includes(r.key)),
-      R('boleta_haberes', 'Boleta de haberes (vigencia no mayor a 30 días)', 'paciente', 'meses', 1),
-      R('historia_clinica', 'Historia clínica', 'paciente', 'meses', 12),
-      R('informe_social', 'Informe social', 'paciente', 'meses', 12),
-      R('consolidado_egov', 'Consolidado e-Gov (publicación de autorización)', 'paciente', 'fecha_doc', 0),
-      R('hoja_ruta', 'Hoja de ruta', 'paciente', 'meses', 12),
+      ...INCLUIR_PACIENTE,
       ...BASE_PRESTADOR,
       R('m_dj_esc107', 'DJ-ESC107 (planilla de conformidad efectiva de la prestación)', 'mensual', 'no', 0),
       ...BASE_MENSUAL,
     ],
-    notas: 'BORRADOR. Lista de paciente tomada del recibo de Presentación Docs que ya usa la empresa.',
+    notas: 'Traslado programado, Programa Incluir Salud (Ministerio de Salud Pública de Tucumán). Requisitos de paciente según documento oficial. Documento oficial recibido, nov 2026. Los requisitos de prestador y los mensuales se conservan de la práctica actual de la empresa (sin cambios).',
   },
   {
     id: 'pami',
@@ -96,20 +175,31 @@ module.exports = [
     alias: ['OSPRERA'],
     presentacion: {
       dia: 10,
-      canal: 'Delegación OSPRERA / portal de discapacidad (confirmar)',
-      notas: 'Obra social nacional: rige el Mecanismo de Integración (Res. SSSalud 360/2022). Las fechas de cierre las fija el cronograma de la SSSalud. Sin tope de km.',
+      canal: 'Delegación Tucumán de OSPRERA (agencia Concepción para domicilios desde el límite sur de la provincia hasta Monteros)',
+      notas: 'Recepción de carpetas: lunes, martes y miércoles de 08:00 a 12:00 en la delegación Tucumán de OSPRERA (agencia Concepción para domicilios desde el límite sur de la provincia hasta Monteros). La carpeta la presenta el responsable del afiliado; las correcciones las pueden presentar los prestadores. Límite de 25 afiliados por prestador individual. No se debe iniciar la prestación hasta que OSPRERA la autorice. Las carpetas pasan por auditoría administrativa y médica: presentarlas con la mayor anticipación posible. Contacto: discapacidad.tucuman@osprera.org.ar, teléfono 0381-4300768 interno 10.',
     },
     requisitos: [
-      R('cuil', 'Constancia de CUIL (titular y paciente)', 'paciente', 'no', 0),
-      R('recibos_titular', 'Últimos 3 recibos de sueldo del titular', 'paciente', 'meses', 3,
-        { notas: 'Confirmar si OSPRERA lo pide (lo piden varias obras sociales nacionales).' }),
-      ...BASE_PACIENTE,
-      ...BASE_PRESTADOR,
-      R('p_registro_sss', 'Inscripción en el Registro Nacional de Prestadores (SSSalud)', 'prestador', 'fecha_doc', 0),
-      R('p_alta_proveedor', 'Formulario de alta de proveedor (anual)', 'prestador', 'meses', 12),
+      ...OSPRERA_PACIENTE,
+      ...OSPRERA_PRESTADOR,
       R('m_autorizacion', 'Copia de la autorización vigente (va con cada factura)', 'mensual', 'no', 0),
       ...BASE_MENSUAL,
     ],
-    notas: 'BORRADOR basado en Res. SSSalud 360/2022 e instructivos de otras obras sociales nacionales. Confirmar con OSPRERA.',
+    notas: "Expedientes de discapacidad 2025, prestación de transporte. Fuente: documento 'Expedientes discapacidad 2025'. Documento oficial recibido, nov 2026. Requisitos 2025: confirmar vigencia para 2026. No se cargan los requisitos que son solo de terapias (informe de evaluación inicial, informe evolutivo, plan de abordaje individual, presupuesto prestacional, informe de seguimiento semestral): no aplican a transporte. Los requisitos mensuales se conservan de la práctica actual de la empresa (sin cambios).",
+  },
+  {
+    id: 'subsidio-ipsst',
+    nombre: 'Subsidio IPSST',
+    alias: ['SUBSIDIO', 'IPSST'],
+    presentacion: {
+      // El sistema exige un día de 1 a 31 (por defecto 10): acá no significa nada, ver las notas.
+      dia: 10,
+      canal: 'Nota dirigida al Instituto de Previsión y Seguridad Social de Tucumán (IPSST)',
+      notas: 'Se presenta por nota dirigida al IPSST adjuntando la documentación. Sin día de presentación fijo: el día 10 que muestra el sistema es solo un valor por defecto.',
+    },
+    requisitos: [
+      ...IPSST_PACIENTE,
+      ...IPSST_PRESTADOR,
+    ],
+    notas: 'Subsidio de transporte especial programado: se solicita por nota al Instituto de Previsión y Seguridad Social de Tucumán (IPSST). Documento oficial recibido, nov 2026.',
   },
 ];
