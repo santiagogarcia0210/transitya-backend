@@ -42,8 +42,9 @@ module.exports = function crearRouterRecorrido({ llamador = () => S.llamadorAnth
       if (!bytes) return res.status(400).json({ ok: false, mensaje: 'El archivo está vacío.' });
       if (bytes > S.MAX_BYTES) return res.status(400).json({ ok: false, mensaje: 'El archivo supera 8 MB.' });
 
-      let reg = await col(t, 'registro').doc(String(b.beneficiarioId || '')).get();
-      if (!reg.exists) reg = await col(t, 'BENEFICIARIOS').doc(String(b.beneficiarioId || '')).get();
+      const benId = String(b.beneficiarioId || '');
+      let reg = await col(t, 'registro').doc(benId).get();
+      if (!reg.exists) reg = await col(t, 'BENEFICIARIOS').doc(benId).get();
       if (!reg.exists) return res.status(404).json({ ok: false, mensaje: 'Paciente no encontrado.' });
       const raw = reg.data();
       const domicilioPaciente = String(raw.DOMICILIO || raw.domicilio || '');
@@ -51,7 +52,7 @@ module.exports = function crearRouterRecorrido({ llamador = () => S.llamadorAnth
       const verificar = p => R.verificarRecorrido({ origen: p.origen.texto, destino: p.destino.texto }, { domicilioPaciente, centro });
 
       const hash = S.hashArchivo(base64);
-      const ref = col(t, 'recorrido_lecturas').doc(`${reg.id}_${hash}`);
+      const ref = col(t, 'recorrido_lecturas').doc(`${benId}_${hash}`);
       if (b.forzar !== true) {
         const c = await ref.get();
         if (c.exists) {
@@ -74,9 +75,9 @@ module.exports = function crearRouterRecorrido({ llamador = () => S.llamadorAnth
       }
       // Recién ahora se sube el original: si la IA falló no queda un archivo huérfano.
       const nombre = String(a.nombre || 'recorrido').replace(/[^\w.\- ]+/g, '_').slice(0, 80);
-      const ruta = `presupuestos-recorridos/${t}/${reg.id}/${randomUUID()}-${nombre}`;
+      const ruta = `presupuestos-recorridos/${t}/${benId}/${randomUUID()}-${nombre}`;
       const archivoUrl = await subir(base64, mime, ruta);
-      await ref.set({ beneficiarioId: reg.id, hash, archivoUrl, archivoNombre: nombre, archivoRuta: ruta, mime, tamano: bytes, propuesta: leido.propuesta, modelo: leido.modelo, uso: leido.uso, leidoEn: ahora().toISOString(), leidoPor: nombreUsuario(req.user) });
+      await ref.set({ beneficiarioId: benId, hash, archivoUrl, archivoNombre: nombre, archivoRuta: ruta, mime, tamano: bytes, propuesta: leido.propuesta, modelo: leido.modelo, uso: leido.uso, leidoEn: ahora().toISOString(), leidoPor: nombreUsuario(req.user) });
       console.log('[RECORRIDO-IA] lectura', JSON.stringify({ tenant: t, leidos: 1, tokensEntrada: leido.uso.entrada || 0, tokensSalida: leido.uso.salida || 0, ms: Date.now() - t0 }));
       res.json({ ok: true, hash, archivoUrl, archivoNombre: nombre, repetido: false, propuesta: leido.propuesta, verificacion: verificar(leido.propuesta) });
     } catch (e) {

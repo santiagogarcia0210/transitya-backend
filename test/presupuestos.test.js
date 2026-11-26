@@ -387,3 +387,21 @@ describe('leer-recorrido (impresión de Google Maps)', () => {
     for (const s of ['Calle Uno', 'Calle Dos', 'Calle Secreta', 'Paciente Ficticio', '30111222']) assert.ok(!todo.includes(s), `"${s}" apareció en los logs`);
   });
 });
+
+describe('detalle del presupuesto con respaldo', () => {
+  test('devuelve las impresiones de Google Maps (con su propuesta, para poder editar un borrador) y los documentos del legajo', async () => {
+    const c = await montar({ llamador: () => async () => ({ texto: JSON.stringify({ legible: true, origen: { valor: 'Calle Uno 100', confianza: 'alta' }, destino: { valor: 'Calle Dos 200', confianza: 'alta' }, rutas: [{ km: { valor: 12.4, unidad: 'km' }, seleccionada: true }], sentidos: 'una_ruta' }), uso: {}, modelo: 'm', parada: 'end_turn' }) });
+    sembrar(c.db);
+    c.db.docs.set('empresas/t1/legajo_docs/d1', { id: 'd1', beneficiarioId: 'b1', nombre: 'Orden médica', archivoUrl: 'https://almacen.test/doc' });
+    c.db.docs.set('empresas/t1/legajo_docs/d2', { id: 'd2', beneficiarioId: 'otro', nombre: 'Ajeno', archivoUrl: 'https://almacen.test/ajeno' });
+    const lectura = (await c.post('/leer-recorrido', { beneficiarioId: 'b1', archivo: { base64: Buffer.from('mm').toString('base64'), mimeType: 'image/png', nombre: 'mapa.png' } })).json;
+    const v = viajesRef(); v[0].mapa = { hashes: [lectura.hash], origen: 'impresion', confianza: 'alta', coincide: true, confirmadoManual: false };
+    const id = (await c.post('/', borrador({ viajes: v, respaldoDocs: ['d1', 'd2'] }))).json.id;
+    const r = (await c.get(`/${id}`)).json;
+    const mapas = r.respaldo.filter(x => x.tipo === 'google_maps');
+    assert.strictEqual(mapas.length, 1);
+    assert.strictEqual(mapas[0].propuesta.rutas[0].km, 12.4);
+    assert.strictEqual(mapas[0].hash, lectura.hash);
+    assert.deepStrictEqual(r.respaldo.filter(x => x.tipo === 'documento').map(x => x.nombre), ['Orden médica']);   // el documento de otro paciente no entra
+  });
+});

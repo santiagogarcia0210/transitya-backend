@@ -57,9 +57,9 @@ function crearRouterPresupuestos({ descargar, subirArchivo, ahora = () => new Da
     let s = await col(t, 'registro').doc(id).get();
     if (!s.exists) s = await col(t, 'BENEFICIARIOS').doc(id).get();
     if (!s.exists) return null;
-    const raw = s.data(), b = L.datosBeneficiario({ id: s.id, ...raw });
+    const raw = s.data(), b = L.datosBeneficiario({ id, ...raw });
     return {
-      id: s.id, nombre: b.nombre, dni: b.dni, afiliado: b.afiliado, obraSocial: b.obraSocial,
+      id, nombre: b.nombre, dni: b.dni, afiliado: b.afiliado, obraSocial: b.obraSocial,
       domicilio: campo(raw, 'DOMICILIO', 'domicilio'), localidad: campo(raw, 'LOCALIDAD', 'localidad'),
       tutor: campo(raw, 'TUTOR', 'RESPONSABLE', 'FAMILIAR', 'tutor'), contacto: campo(raw, 'TELEFONO', 'CELULAR', 'TEL', 'CONTACTO', 'telefono'),
     };
@@ -278,7 +278,7 @@ function crearRouterPresupuestos({ descargar, subirArchivo, ahora = () => new Da
       }
       for (const v of p.viajes || []) for (const h of (v.mapa && v.mapa.hashes) || []) {
         const l = await col(req.tenantId, 'recorrido_lecturas').doc(`${p.beneficiarioId}_${h}`).get();
-        if (l.exists) respaldo.push({ tipo: 'google_maps', viaje: v.id, nombre: l.data().archivoNombre, archivoUrl: l.data().archivoUrl });
+        if (l.exists) respaldo.push({ tipo: 'google_maps', viaje: v.id, hash: h, nombre: l.data().archivoNombre, archivoUrl: l.data().archivoUrl, propuesta: l.data().propuesta });
       }
       res.json({ ok: true, presupuesto: p, respaldo });
     } catch (e) { errHandler(res, req, e); }
