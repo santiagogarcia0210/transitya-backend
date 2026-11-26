@@ -1,2 +1,5 @@
 node_modules/
 .env
+
+# Artefacto de `railway config plan --out`: trae el ID del entorno y no se commitea.
+railway-plan.json
