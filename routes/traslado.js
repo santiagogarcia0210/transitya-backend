@@ -5,17 +5,18 @@ const {
   normalizarText_, fechaHoyAR, nombreUsuario,
   esMesISO, generarCorrelativo, col, MESES, randomUUID
 } = require('../utils');
+const { normalizarFecha, fechaOHoy, mismoDia } = require('../utils/fechas');
 
 const errHandler = (res, req, e) => {
   console.error('[TRASLADO]', req.path, e.message);
   res.status(500).json({ ok: false, mensaje: e.message });
 };
 
-const isoToDMY = (f) => {
-  if (!f || !f.includes('-')) return f;
-  const [y, m, d] = f.split('-');
-  return `${d}/${m}/${y}`;
-};
+const MSG_FECHA = 'La fecha no es válida. Usá el formato dd/MM/yyyy (por ejemplo 05/11/2026).';
+
+// Viajes y reservas: la fecha puede faltar. Si se entiende se guarda en dd/MM/yyyy (antes solo se convertía
+// el ISO); si no, queda como vino: ahí no se rechaza, para que se pueda ver y corregir.
+const fechaViaje = f => normalizarFecha(f) || f || '';
 
 // ── CHOFERES ──────────────────────────────────────────────────────────────────
 
@@ -130,7 +131,7 @@ router.get('/viajes-chofer', verifyToken, async (req, res) => {
     const hoy  = fechaHoyAR();
     const snap = await col(req.tenantId, 'tras_viajes').get();
     const deHoy = snap.docs.map(d => d.data())
-      .filter(v => v.choferId === chofer.id && (v.fecha === hoy || !v.fecha) && v.estado !== 'cancelado' && v.estado !== 'completado')
+      .filter(v => v.choferId === chofer.id && (mismoDia(v.fecha, hoy) || !v.fecha) && v.estado !== 'cancelado' && v.estado !== 'completado')
       .sort((a, b) => String(a.hora || '').localeCompare(String(b.hora || '')));
     res.json({ ok: true, viajes: deHoy, chofer });
   } catch (e) { errHandler(res, req, e); }
@@ -222,7 +223,7 @@ router.post('/viajes', verifyToken, async (req, res) => {
       id, nroViaje, pasajeroId: data.pasajeroId || '', pasajeroNombre: data.pasajeroNombre || '',
       pasajeroTel: data.pasajeroTel || '', choferId: data.choferId || '',
       choferNombre: data.choferNombre || '', origen: data.origen || '', destino: data.destino || '',
-      fecha: isoToDMY(data.fecha) || data.fecha || '', hora: data.hora || '',
+      fecha: fechaViaje(data.fecha), hora: data.hora || '',
       precio: Number(data.precio) || 0, estado: data.estado || 'pendiente',
       notas: data.notas || '', historial: data.historial || [],
       creadoPor: data.creadoPor || usuario, creadoEn: data.creadoEn || new Date().toISOString()
@@ -237,7 +238,9 @@ router.put('/viajes/:id', verifyToken, async (req, res) => {
   try {
     const ref = col(req.tenantId, 'tras_viajes').doc(req.params.id);
     if (!(await ref.get()).exists) return res.status(404).json({ ok: false, mensaje: 'Viaje no encontrado.' });
-    await ref.update({ ...req.body, actualizadoEn: new Date().toISOString() });
+    const cambios = { ...req.body };
+    if (cambios.fecha !== undefined) cambios.fecha = fechaViaje(cambios.fecha);   // como el POST: se normaliza si se entiende
+    await ref.update({ ...cambios, actualizadoEn: new Date().toISOString() });
     res.json({ ok: true });
   } catch (e) { errHandler(res, req, e); }
 });
@@ -269,7 +272,7 @@ router.post('/reservas', verifyToken, async (req, res) => {
     const doc  = {
       id, pasajeroId: data.pasajeroId || '', pasajeroNombre: data.pasajeroNombre || '',
       pasajeroTel: data.pasajeroTel || '', origen: data.origen || '', destino: data.destino || '',
-      fecha: isoToDMY(data.fecha) || data.fecha || '', hora: data.hora || '',
+      fecha: fechaViaje(data.fecha), hora: data.hora || '',
       precio: Number(data.precio) || 0, estado: data.estado || 'pendiente',
       notas: data.notas || '', creadoPor: nombreUsuario(req.user),
       creadoEn: data.creadoEn || new Date().toISOString()
@@ -322,7 +325,9 @@ router.put('/reservas/:id', verifyToken, async (req, res) => {
   try {
     const ref = col(req.tenantId, 'tras_reservas').doc(req.params.id);
     if (!(await ref.get()).exists) return res.status(404).json({ ok: false, mensaje: 'Reserva no encontrada.' });
-    await ref.update({ ...req.body, actualizadoEn: new Date().toISOString() });
+    const cambios = { ...req.body };
+    if (cambios.fecha !== undefined) cambios.fecha = fechaViaje(cambios.fecha);   // como el POST: se normaliza si se entiende
+    await ref.update({ ...cambios, actualizadoEn: new Date().toISOString() });
     res.json({ ok: true });
   } catch (e) { errHandler(res, req, e); }
 });
@@ -350,6 +355,10 @@ router.get('/facturas', verifyToken, requireAdmin, async (req, res) => {
 router.post('/facturas', verifyToken, requireAdmin, async (req, res) => {
   try {
     const data     = req.body;
+    // Sin fecha: hoy (como siempre). Con fecha: dd/MM/yyyy, o 400. Se valida ANTES de generar el correlativo:
+    // un rechazo no gasta un número de factura. La misma fecha se copia al ingreso.
+    const fecha    = fechaOHoy(data.fecha, fechaHoyAR());
+    if (!fecha) return res.status(400).json({ ok: false, mensaje: MSG_FECHA });
     const esNueva  = !data.id;
     const id       = data.id || randomUUID();
     const tipoFac  = String(data.tipoFactura || 'X').toUpperCase();
@@ -376,7 +385,7 @@ router.post('/facturas', verifyToken, requireAdmin, async (req, res) => {
       total: Number(data.total) || 0, descuento: Number(data.descuento) || 0,
       condicionVenta: String(data.condicionVenta || 'Contado').trim(),
       observaciones: String(data.observaciones || '').trim(),
-      estado: data.estado || 'pendiente', fecha: data.fecha || fechaHoyAR(),
+      estado: data.estado || 'pendiente', fecha,
       fechaPago: data.fechaPago || '', ingresoId: data.ingresoId || '',
       creadoPor: nombreUsuario(req.user),
       creadoEn: esNueva ? new Date().toISOString() : (data.creadoEn || new Date().toISOString()),
@@ -448,7 +457,14 @@ router.put('/facturas/:id', verifyToken, requireAdmin, async (req, res) => {
   try {
     const ref = col(req.tenantId, 'tras_facturas').doc(req.params.id);
     if (!(await ref.get()).exists) return res.status(404).json({ ok: false, mensaje: 'Factura no encontrada.' });
-    await ref.update({ ...req.body, actualizadoEn: new Date().toISOString() });
+    const cambios = { ...req.body };
+    // Si la fecha viene se normaliza; si no se entiende (o viene vacía), 400 y no se toca nada.
+    if (cambios.fecha !== undefined) {
+      const fecha = normalizarFecha(cambios.fecha);
+      if (!fecha) return res.status(400).json({ ok: false, mensaje: MSG_FECHA });
+      cambios.fecha = fecha;
+    }
+    await ref.update({ ...cambios, actualizadoEn: new Date().toISOString() });
     res.json({ ok: true });
   } catch (e) { errHandler(res, req, e); }
 });

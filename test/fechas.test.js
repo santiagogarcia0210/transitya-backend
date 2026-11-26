@@ -327,3 +327,41 @@ describe('esMesFecha: el reemplazo de esMesDMY que sí entiende ISO', () => {
     for (const f of ['basura', '31/02/2026', '', null, undefined, {}]) assert.strictEqual(esMesFecha(f, 11, 2026), false, String(f));
   });
 });
+
+describe('mismoDia, fechaOHoy e isoToDMY', () => {
+  const { mismoDia, fechaOHoy, isoToDMY } = F;
+
+  test('mismoDia: el mismo día en cualquier formato; días distintos no; Date e instantes se pasan a hora de Argentina', () => {
+    assert.strictEqual(mismoDia('2026-11-05', '05/11/2026'), true);
+    assert.strictEqual(mismoDia('5/11/26', '2026-11-05'), true);
+    assert.strictEqual(mismoDia('2026-11-05', '2026-11-06'), false);
+    assert.strictEqual(mismoDia('2026-11-06T01:30:00.000Z', '05/11/2026'), true, '01:30 UTC del 6 todavía es el 5 en Argentina');
+    assert.strictEqual(mismoDia(new Date('2026-11-05T15:00:00Z'), '05/11/2026'), true);
+  });
+
+  test('mismoDia: una fecha que no se entiende nunca iguala a un día; solo a ese mismo texto; y dos vacías no son iguales', () => {
+    assert.strictEqual(mismoDia('basura', '05/11/2026'), false);
+    assert.strictEqual(mismoDia('basura', 'basura'), true, 'mismo texto (como la igualdad exacta de antes)');
+    assert.strictEqual(mismoDia('basura', 'otra cosa'), false);
+    for (const [a, b] of [['', ''], [null, undefined], [undefined, ''], ['  ', '  ']]) assert.strictEqual(mismoDia(a, b), false, JSON.stringify([a, b]));
+  });
+
+  test('fechaOHoy: sin fecha es hoy; con fecha se normaliza; inválida da vacío', () => {
+    for (const v of [undefined, null, '', '   ']) assert.strictEqual(fechaOHoy(v, '15/11/2026'), '15/11/2026', JSON.stringify(v));
+    assert.strictEqual(fechaOHoy('2026-11-05', '15/11/2026'), '05/11/2026');
+    assert.strictEqual(fechaOHoy('5/11/26', '15/11/2026'), '05/11/2026');
+    for (const v of ['basura', '31/02/2026', '2026-13-45', 0, {}]) assert.strictEqual(fechaOHoy(v, '15/11/2026'), '', JSON.stringify(v));
+  });
+
+  test('fechaOHoy sin segundo argumento usa el día de hoy en Argentina', () => {
+    assert.strictEqual(fechaOHoy(undefined), F.hoyAR());
+  });
+
+  test('isoToDMY: solo convierte yyyy-MM-dd; todo lo demás vuelve tal cual (no inventa fechas)', () => {
+    assert.strictEqual(isoToDMY('2026-11-05'), '05/11/2026');
+    assert.strictEqual(isoToDMY(' 2026-11-05 '), '05/11/2026');
+    for (const v of ['05/11/2026', '2026-11-05T14:30:00', '05-11-2026', 'basura', '', undefined, null, 20261105]) {
+      assert.strictEqual(isoToDMY(v), v, JSON.stringify(v));
+    }
+  });
+});

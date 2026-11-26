@@ -115,6 +115,39 @@ function esMesFecha(f, m, y) {
   return Number(mes) === Number(m) && Number(anio) === Number(y);
 }
 
+/**
+ * ¿Son el mismo día? Compara las dos fechas ya normalizadas, así "2026-11-05", "5/11/26" y "05/11/2026"
+ * son iguales. Si alguna no se entiende no hay "día" que comparar: solo cuenta como igual si es el mismo
+ * texto, y nunca dos vacías (dos fechas inválidas darían '' y se igualarían: un falso positivo).
+ */
+function mismoDia(a, b) {
+  const na = normalizarFecha(a), nb = normalizarFecha(b);
+  if (na && nb) return na === nb;
+  const ta = typeof a === 'string' ? a.trim() : '';
+  const tb = typeof b === 'string' ? b.trim() : '';
+  return ta !== '' && ta === tb;
+}
+
+/**
+ * La fecha con la que se guarda un documento: si no vino (ausente, null o vacía) es `hoy`, como siempre;
+ * si vino, se normaliza a dd/MM/yyyy, y si no se entiende da '' (el llamador responde 400). `hoy` se pasa
+ * de afuera para poder probarlo; las rutas pasan fechaHoyAR().
+ */
+function fechaOHoy(valor, hoy = hoyAR()) {
+  const falta = valor === undefined || valor === null || String(valor).trim() === '';
+  return falta ? hoy : normalizarFecha(valor);
+}
+
+/**
+ * yyyy-MM-dd → dd/MM/yyyy. Es la ÚNICA conversión ISO → dd/MM/yyyy del sistema (antes había una copia en
+ * traslado.js y otra en resumenDiario.js). Cualquier otra cosa se devuelve tal cual: no inventa una fecha.
+ */
+function isoToDMY(f) {
+  if (typeof f !== 'string') return f;
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(f.trim());
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : f;
+}
+
 /** Milisegundos de un Timestamp de Firestore, Date, ISO, número o {seconds}; 0 si falta o no se entiende. */
 function timestampMs(v) {
   if (v === null || v === undefined || v === '') return 0;
@@ -186,6 +219,6 @@ function variantesFecha(f) {
 }
 
 module.exports = {
-  normalizarFecha, fechaSort, fechaToDate, fechaDoc, esMesFecha, timestampMs, ordenarPorFechaDesc,
+  normalizarFecha, fechaSort, fechaToDate, fechaDoc, esMesFecha, mismoDia, fechaOHoy, isoToDMY, timestampMs, ordenarPorFechaDesc,
   hoyAR, sumarDias, diaSemana, nombreDiaSemana, esDiaHabil, variantesFecha,
 };

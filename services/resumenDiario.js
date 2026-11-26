@@ -2,14 +2,9 @@
  * Lógica de join multi-colección para resumen diario y mensual por chofer.
  */
 const { col, parseMonto_, normalizarText_ } = require('../utils');
+const { isoToDMY } = require('../utils/fechas');   // la única conversión ISO → dd/MM/yyyy del sistema
 
 /* ── Helpers de fecha ─────────────────────────────────────────────────────── */
-
-const isoToDMY = (iso) => {
-  if (!iso || !iso.includes('-')) return iso;
-  const [y, m, d] = iso.split('-');
-  return `${d}/${m}/${y}`;
-};
 
 // Parsea dd/MM/yyyy → Date (null si no puede)
 const dmyToDate = (f) => {
@@ -326,4 +321,4 @@ async function calcularResumenMensual(tenantId, mesISO, soloEmail = null) {
   return { mes: mesISO, choferes: conActividad, _logs: logs };
 }
 
-module.exports = { calcularResumenDiario, calcularResumenMensual, isoToDMY, cargarChoferes };
+module.exports = { calcularResumenDiario, calcularResumenMensual, cargarChoferes };
