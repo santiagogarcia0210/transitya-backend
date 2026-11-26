@@ -10,6 +10,9 @@
 //
 // En legajo_docs, los documentos confirmados llevan además: origen "ia", confianzaIA, archivoHash, leidoEn,
 // modelo, camposEditados, pacienteConfirmadoManual y datosIA (importe/concepto/validez de un presupuesto).
+// Datos clínicos (CUD y orden médica): solo si puedeVerClinico(usuario). NO se guardan en legajo_lecturas (la caché
+// solo marca que el archivo tenía datos clínicos): viajan en la respuesta de leer-ia, el administrativo los revisa, y
+// al confirmar se guardan cifrados y auditados en legajo_clinico (ver services/legajoClinicoStore.js).
 // NUNCA se escribe nada en el registro del paciente. Los datos de vencimiento no van a la colección `vencimientos`:
 // en este sistema los de un paciente se derivan de legajo_docs (checklist), y escribirlos ahí duplicaría la alerta.
 //
@@ -20,6 +23,9 @@ const { col, randomUUID, nombreUsuario } = require('../utils');
 const { normalizarFecha, fechaToDate } = require('../utils/fechas');
 const L = require('../services/legajos');
 const S = require('../services/legajoIA');
+const C = require('../services/legajoClinico');
+const { crearStore } = require('../services/legajoClinicoStore');
+const { puedeVerClinico } = require('../middleware/permisos');
 
 const ESTADOS_TRAMITE = new Set(['CARGADO', 'PRESENTADO', 'APROBADO', 'OBSERVADO']);
 const MAX_ITEMS_CONFIRMAR = 20;
@@ -34,7 +40,8 @@ const moneda = n => `$${Number(n).toLocaleString('es-AR', { maximumFractionDigit
  *   limitador   → crearLimitador()
  *   ahora()     → Date
  */
-module.exports = function crearRouterLegajosIA({ prepararArchivo, llamador = () => S.llamadorAnthropic(), limitador, ahora = () => new Date() }) {
+module.exports = function crearRouterLegajosIA({ prepararArchivo, llamador = () => S.llamadorAnthropic(), limitador, ahora = () => new Date(), almacenClinico }) {
+  const clinicoStore = almacenClinico || crearStore({ col, ahora });
   const router = require('express').Router();
   const limite = limitador || S.crearLimitador({ max: Number(process.env.LEGAJO_IA_MAX_POR_HORA) || 60 });
 
@@ -44,13 +51,13 @@ module.exports = function crearRouterLegajosIA({ prepararArchivo, llamador = () 
     return snap.exists ? L.datosBeneficiario({ id: snap.id, ...snap.data() }) : null;
   }
 
-  async function contextoDe(tenantId, beneficiario) {
+  async function contextoDe(tenantId, beneficiario, pedirClinico = false) {
     const snap = await col(tenantId, 'requisitos_os').get();
     const obras = snap.docs.map(d => ({ id: d.id, ...d.data() }));
     const obra = L.matchObraSocial(beneficiario.obraSocial, obras);
     const requisitos = (obra?.requisitos || []).filter(r => r.categoria === 'paciente')
       .map(({ key, nombre, vencimiento, vigenciaMeses }) => ({ key, nombre, vencimiento, vigenciaMeses }));
-    return { obra, contexto: { obraNombre: obra?.nombre || '', requisitos } };
+    return { obra, contexto: { obraNombre: obra?.nombre || '', requisitos, pedirClinico } };
   }
 
   function validarArchivo(a) {
@@ -92,6 +99,7 @@ module.exports = function crearRouterLegajosIA({ prepararArchivo, llamador = () 
       if (!llamar) return res.status(503).json({ ok: false, mensaje: 'La lectura con IA no está configurada en el servidor (falta la clave de la IA). Avisá a soporte; mientras tanto podés cargar los documentos a mano.' });
 
       const { beneficiarioId } = req.params;
+      const clinicoOk = puedeVerClinico(req.user);
       const body = req.body || {};
       const archivos = Array.isArray(body.archivos) ? body.archivos : [];
       if (archivos.length < 1) return res.status(400).json({ ok: false, mensaje: 'Subí al menos un archivo.' });
@@ -111,12 +119,15 @@ module.exports = function crearRouterLegajosIA({ prepararArchivo, llamador = () 
         const hash = S.hashArchivo(v.base64);
         if (vistos.has(hash)) { filas.push({ ...base, ok: false, mensaje: 'Este archivo está repetido en la tanda.' }); continue; }
         vistos.add(hash);
-        let lec = null;
+        let lec = null, relectura = null;
         if (body.forzar !== true) {
           const snap = await lecturas.doc(`${beneficiarioId}_${hash}`).get();
           if (snap.exists) lec = snap.data();
         }
-        filas.push({ ...base, v, hash, lec });
+        // Lo clínico no se guarda en la caché: un CUD u orden médica aún no confirmado se vuelve a leer (con el
+        // archivo ya subido) si quien lo pide puede ver datos clínicos.
+        if (lec && clinicoOk && lec.resultado && lec.resultado.clinicoDocumento && !lec.confirmada) { relectura = lec; lec = null; }
+        filas.push({ ...base, v, hash, lec, relectura });
       }
 
       // Fase 2: el cupo por empresa se reserva solo para lo que va a la IA.
@@ -130,7 +141,7 @@ module.exports = function crearRouterLegajosIA({ prepararArchivo, llamador = () 
       }
 
       // Fase 3: leer lo que no estaba en la caché, de a uno (más fácil de controlar el gasto).
-      const { contexto } = pendientes.length ? await contextoDe(req.tenantId, beneficiario) : { contexto: null };
+      const { contexto } = pendientes.length ? await contextoDe(req.tenantId, beneficiario, clinicoOk) : { contexto: null };
       const resultados = [];
       let tokensEntrada = 0, tokensSalida = 0, leidos = 0, deCache = 0;
       for (const f of filas) {
@@ -142,13 +153,18 @@ module.exports = function crearRouterLegajosIA({ prepararArchivo, llamador = () 
             const d = await col(req.tenantId, 'legajo_docs').doc(f.lec.docId).get();
             if (d.exists) yaCargado = { docId: f.lec.docId };
           }
-          resultados.push({ indice: f.indice, nombreArchivo: f.nombreArchivo, ...itemDeLectura(f.lec, beneficiario, { repetido: true, yaCargado }) });
+          resultados.push({ indice: f.indice, nombreArchivo: f.nombreArchivo, ...itemDeLectura(f.lec, beneficiario, { repetido: true, yaCargado, clinicoOmitido: !!(clinicoOk && f.lec.resultado && f.lec.resultado.clinicoDocumento) }) });
           continue;
         }
         try {
-          const { lectura, uso, modelo } = await S.leerDocumento({ archivo: { base64: f.v.base64, mime: f.v.mime }, contexto, beneficiario, llamar, ahora: ahora() });
+          const { lectura: completa, uso, modelo } = await S.leerDocumento({ archivo: { base64: f.v.base64, mime: f.v.mime }, contexto, beneficiario, llamar, ahora: ahora() });
+          // Lo clínico se separa ANTES de armar el registro de caché: ahí solo queda qué tipo de documento era.
+          const { clinico, ...lectura } = completa;
+          lectura.clinicoDocumento = clinico ? clinico.documento : null;
           // Recién ahora se sube el original: si la IA falló no queda un archivo huérfano.
-          const arch = await prepararArchivo(req.tenantId, beneficiarioId, { base64: f.v.base64, mimeType: f.v.mime, nombre: f.v.nombre });
+          const arch = f.relectura
+            ? { archivoUrl: f.relectura.archivoUrl, archivoNombre: f.relectura.archivoNombre, archivoRuta: f.relectura.archivoRuta }
+            : await prepararArchivo(req.tenantId, beneficiarioId, { base64: f.v.base64, mimeType: f.v.mime, nombre: f.v.nombre });
           const lec = {
             beneficiarioId, hash: f.hash, archivoUrl: arch.archivoUrl, archivoNombre: arch.archivoNombre, archivoRuta: arch.archivoRuta,
             mime: f.v.mime, tamano: f.v.bytes, resultado: lectura, modelo, uso, leidoEn: ahora().toISOString(),
@@ -156,7 +172,7 @@ module.exports = function crearRouterLegajosIA({ prepararArchivo, llamador = () 
           };
           await lecturas.doc(`${beneficiarioId}_${f.hash}`).set(lec);
           tokensEntrada += uso.entrada || 0; tokensSalida += uso.salida || 0; leidos++;
-          resultados.push({ indice: f.indice, nombreArchivo: f.nombreArchivo, ...itemDeLectura(lec, beneficiario, { repetido: false, yaCargado: null }) });
+          resultados.push({ indice: f.indice, nombreArchivo: f.nombreArchivo, ...itemDeLectura(lec, beneficiario, { repetido: false, yaCargado: null, ...(clinicoOk && clinico ? { clinico } : {}) }) });
         } catch (e) {
           limite.devolver(req.tenantId, 1);   // si falló no se cobró: se devuelve el cupo
           console.error('[LEGAJO-IA] error al leer', { estado: e.status || null, tipo: e.codigo || e.name });
@@ -177,6 +193,7 @@ module.exports = function crearRouterLegajosIA({ prepararArchivo, llamador = () 
   router.post('/:beneficiarioId/confirmar-lectura', verifyToken, requireAdmin, async (req, res) => {
     try {
       const { beneficiarioId } = req.params;
+      const clinicoOk = puedeVerClinico(req.user);
       const items = Array.isArray(req.body?.items) ? req.body.items : [];
       if (items.length < 1) return res.status(400).json({ ok: false, mensaje: 'No hay nada para confirmar.' });
       if (items.length > MAX_ITEMS_CONFIRMAR) return res.status(400).json({ ok: false, mensaje: `Confirmá hasta ${MAX_ITEMS_CONFIRMAR} documentos por vez.` });
@@ -184,6 +201,13 @@ module.exports = function crearRouterLegajosIA({ prepararArchivo, llamador = () 
       const beneficiario = await buscarBeneficiario(req.tenantId, beneficiarioId);
       if (!beneficiario) return res.status(404).json({ ok: false, mensaje: 'Paciente no encontrado.' });
       const { contexto } = await contextoDe(req.tenantId, beneficiario);
+
+      /** Guarda los datos clínicos confirmados (cifrados y auditados). Devuelve true si guardó algo. */
+      const guardarClin = async clin => {
+        if (!clin || !Object.keys(clin.campos).length) return false;
+        await clinicoStore.guardarSeccion(req.tenantId, { ...req.user, nombre: nombreUsuario(req.user) }, beneficiarioId, clin.documento, clin.campos, 'ia');
+        return true;
+      };
 
       const resultados = [];
       for (const item of items) {
@@ -197,10 +221,25 @@ module.exports = function crearRouterLegajosIA({ prepararArchivo, llamador = () 
         if (!lecSnap.exists) { fallo(404, 'No encontramos esa lectura. Volvé a subir el archivo.'); continue; }
         const lec = lecSnap.data();
 
+        // Datos clínicos: se validan ANTES de escribir nada.
+        let clinico = null;
+        if (item.clinico) {
+          if (!clinicoOk) { fallo(403, 'Sin permisos para guardar datos clínicos.'); continue; }
+          if (!clinicoStore.disponible()) { fallo(503, 'No se pueden guardar datos clínicos: falta la clave de cifrado en el servidor. Avisá a soporte.'); continue; }
+          try { clinico = C.sanitizarClinicoConfirmado(item.clinico); } catch (e) { fallo(400, e.mensaje || 'Datos clínicos inválidos.'); continue; }
+        }
+        const guardarClinSeguro = async () => {
+          try { return { clinicoGuardado: await guardarClin(clinico) }; }
+          catch (e) {
+            console.error('[LEGAJO-IA] no se pudieron guardar datos clínicos', { codigo: e.codigo || e.name });   // nunca el contenido
+            return { clinicoGuardado: false, avisoClinico: 'El documento se guardó, pero no se pudieron guardar los datos clínicos. Volvé a leer el archivo.' };
+          }
+        };
+
         // Idempotente: si ya se confirmó y el documento sigue en la carpeta, no se duplica.
         if (lec.confirmada && lec.docId && !item.docId) {
           const ya = await col(req.tenantId, 'legajo_docs').doc(lec.docId).get();
-          if (ya.exists) { resultados.push({ hash, ok: true, id: lec.docId, yaExistia: true }); continue; }
+          if (ya.exists) { resultados.push({ hash, ok: true, id: lec.docId, yaExistia: true, ...(await guardarClinSeguro()) }); continue; }
         }
 
         const ver = S.verificarPaciente(lec.resultado, beneficiario);
@@ -267,7 +306,7 @@ module.exports = function crearRouterLegajosIA({ prepararArchivo, llamador = () 
           });
         }
         await lecRef.update({ confirmada: true, docId: id, confirmadaEn: ahoraIso, confirmadaPor: nombreUsuario(req.user) });
-        resultados.push({ hash, ok: true, id, yaExistia: false });
+        resultados.push({ hash, ok: true, id, yaExistia: false, ...(await guardarClinSeguro()) });
       }
       res.json({ ok: true, resultados });
     } catch (e) {
