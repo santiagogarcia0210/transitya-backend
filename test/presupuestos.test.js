@@ -243,6 +243,18 @@ describe('ciclo de vida', () => {
   });
 });
 
+describe('ajustes de la pizarra', () => {
+  test('días sin respuesta: entre 1 y 60, y se guardan por empresa', async () => {
+    const c = await montar(); sembrar(c.db);
+    assert.strictEqual((await c.put('/ajustes', { diasSinRespuesta: 0 })).status, 400);
+    assert.strictEqual((await c.put('/ajustes', { diasSinRespuesta: 61 })).status, 400);
+    assert.strictEqual((await c.put('/ajustes', { diasSinRespuesta: 'x' })).status, 400);
+    assert.strictEqual((await c.put('/ajustes', { diasSinRespuesta: 10 })).json.diasSinRespuesta, 10);
+    assert.strictEqual((await c.get('/config')).json.diasSinRespuesta, 10);
+    assert.strictEqual((await c.get('/config', undefined, { tenant: 't2' })).json.diasSinRespuesta, 7);
+  });
+});
+
 describe('asistente (pre-completado)', () => {
   test('trae paciente, obra social, formato, valor vigente y qué falta del transportista', async () => {
     const c = await montar(); sembrar(c.db, 't1', { transportista: false });

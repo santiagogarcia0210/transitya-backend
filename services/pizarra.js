@@ -55,8 +55,35 @@ async function columnaKm(tenantId, { col, ahora, limite }) {
   };
 }
 
+/* ── Presupuestos emitidos sin respuesta (van dentro de la columna de Administración) ─────── */
+const DIAS_SIN_RESPUESTA_DEFAULT = 7;
+const MS_DIA = 86400000;
+
+/**
+ * Presupuestos EMITIDOS que siguen sin aceptarse ni rechazarse pasados X días (configurable, 7 por defecto).
+ * Solo número, paciente, obra social y días: NUNCA datos clínicos (el presupuesto no los guarda).
+ */
+async function presupuestosSinRespuesta(tenantId, { col, ahora, limite }) {
+  const [snap, ajustes] = await Promise.all([
+    col(tenantId, 'presupuestos').where('estado', '==', 'EMITIDO').get(),
+    col(tenantId, 'config').doc('presupuestos').get(),
+  ]);
+  const dias = (ajustes.exists && Number(ajustes.data().diasSinRespuesta)) || DIAS_SIN_RESPUESTA_DEFAULT;
+  const pendientes = snap.docs.map(d => ({ id: d.id, ...d.data() }))
+    .map(p => ({ p, antiguedad: Math.floor((ahora.getTime() - new Date(p.emitidoEn || p.creadoEn || ahora).getTime()) / MS_DIA) }))
+    .filter(x => x.antiguedad >= dias)
+    .sort((a, b) => b.antiguedad - a.antiguedad);
+  return {
+    dias, total: pendientes.length,
+    items: pendientes.slice(0, limite).map(({ p, antiguedad }) => ({
+      id: p.id, numeroTexto: p.numeroTexto || '', beneficiario: (p.beneficiario && p.beneficiario.nombre) || '', obraSocial: p.obraNombre || '',
+      fechaEmision: p.fechaEmision || '', diasSinRespuesta: antiguedad, nivel: 'MEDIA',
+    })),
+  };
+}
+
 /* ── Tareas de la agenda administrativa ──────────────────────────────────────────────────── */
-async function columnaTareas(tenantId, { col, hoyDMY, ahoraLocal, limite }) {
+async function columnaTareas(tenantId, { col, hoyDMY, ahoraLocal, limite, ahora = new Date() }) {
   const y = Number(hoyDMY.slice(6)), m = Number(hoyDMY.slice(3, 5));
   const mesAnterior = m === 1 ? `${y - 1}-12` : `${y}-${pad2(m - 1)}`;
   // Las tareas se marcan hechas con un documento por período: solo importan los dos últimos meses/años.
@@ -71,14 +98,17 @@ async function columnaTareas(tenantId, { col, hoyDMY, ahoraLocal, limite }) {
     .filter(t => t.estado === 'VENCIDO' || (t.estado !== 'HECHO' && t.diffDias !== null && t.diffDias <= DIAS_PROXIMOS))
     .sort(ordenar);
   const vencidas = abiertas.filter(t => t.estado === 'VENCIDO').length;
+  // Si falla la lectura de presupuestos, las tareas igual llegan.
+  const presupuestos = await presupuestosSinRespuesta(tenantId, { col, ahora, limite }).catch(() => ({ dias: DIAS_SIN_RESPUESTA_DEFAULT, total: 0, items: [], error: true }));
   return {
+    presupuestos,
     configuradas: tareasSnap.size,
     items: abiertas.slice(0, limite).map(t => ({
       tareaId: t.tareaId, titulo: t.titulo, obraSocial: t.obraSocial, periodo: t.periodo, frecuencia: t.frecuencia,
       fecha: t.fecha, estado: t.estado, diffDias: t.diffDias, nivel: t.estado === 'VENCIDO' ? 'ALTA' : 'MEDIA',
     })),
     total: abiertas.length, vencidas, proximas: abiertas.length - vencidas,
-    urgentes: vencidas, pendientes: abiertas.length - vencidas,
+    urgentes: vencidas, pendientes: abiertas.length - vencidas + presupuestos.total,
   };
 }
 

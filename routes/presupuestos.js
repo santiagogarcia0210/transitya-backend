@@ -127,6 +127,17 @@ function crearRouterPresupuestos({ descargar, subirArchivo, ahora = () => new Da
     } catch (e) { errHandler(res, req, e); }
   });
 
+  /** Cuántos días sin respuesta tiene que pasar un presupuesto emitido para aparecer en la pizarra (por defecto 7). */
+  router.put('/ajustes', ...auth, async (req, res) => {
+    try {
+      const dias = Number(req.body && req.body.diasSinRespuesta);
+      if (!Number.isInteger(dias) || dias < 1 || dias > 60) return fallo(res, 400, 'Los días sin respuesta tienen que ser un número entre 1 y 60.');
+      const ref = col(req.tenantId, 'config').doc('presupuestos');
+      await ref.set({ ...((await ref.get()).data() || {}), diasSinRespuesta: dias, actualizadoEn: ahora().toISOString() });
+      res.json({ ok: true, diasSinRespuesta: dias });
+    } catch (e) { errHandler(res, req, e); }
+  });
+
   router.put('/transportista', ...auth, async (req, res) => {
     try {
       const datos = P.limpiarTransportista(req.body || {});
