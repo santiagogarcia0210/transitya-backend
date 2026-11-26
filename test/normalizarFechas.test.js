@@ -47,7 +47,23 @@ function armar() {
   set('t1', 'ingresos', 'i_iso',      { fecha: '2026-11-05' });                              // ingresos: también se migra
   set('t1', 'ingresos', 'i_ok',       { fecha: '05/11/2026' });
   set('t1', 'reportes', 'p_iso',      { fecha: '2026-11-06', chofer: 'juan@x.com' });        // reportes de km: también se migra
-  set('t2', 'esp_facturas', 'f_iso',  { fecha: '2026-11-05' });                              // otra colección: no se toca
+  // Facturación, paquetería y traslado (los nombres de colección salen de las rutas)
+  set('t1', 'esp_facturas', 'ef_iso',       { fecha: '2026-11-05' });
+  set('t1', 'arca_facturas', 'af_ok',       { fecha: '05/11/2026' });
+  set('t1', 'arca_facturas', 'af_corta',    { fecha: '5/11/26' });
+  set('t1', 'facturas_emitidas', 'fe_iso',  { fecha: '2026-11-06' });
+  set('t1', 'paq_facturas', 'pf_iso',       { fecha: '2026-11-07' });
+  set('t1', 'paq_rutas', 'pr_iso',          { fecha: '2026-11-08' });
+  set('t1', 'paq_rutas', 'pr_rota',         { fecha: 'basura' });                              // no se entiende
+  set('t1', 'tras_facturas', 'tf_iso',      { fecha: '2026-11-09' });
+  set('t1', 'tras_viajes', 'tv_iso',        { fecha: '2026-11-10', historial: [{ estado: 'pendiente', fecha: '2026-11-10T15:00:00.000Z' }] });
+  set('t1', 'tras_viajes', 'tv_vacio',      { fecha: '' });                                    // un viaje puede no tener fecha
+  set('t1', 'tras_reservas', 'trs_iso',     { fecha: '2026-11-11' });
+  // Colecciones que el script NO mira, con una fecha ISO que no debe tocarse
+  set('t2', 'facturacion', 'fv_iso',        { FECHA: '2026-11-05' });                           // la vieja de Sheets: solo se lee
+  set('t1', 'paq_envios', 'pe_1',           { fechaEntrega: '2026-11-05', historial: [{ estado: 'pendiente', fecha: '2026-11-05T15:00:00.000Z' }] });
+  set('t1', 'presentacion_docs', 'pd_1',    { fecha: '2026-11-05' });                           // tabla libre, sin esquema
+  set('t1', 'ASISTENCIA', '2026-11-05_u1',  { fecha: '2026-11-05', choferId: 'u1' });           // guarda ISO a propósito
   return db;
 }
 
@@ -83,8 +99,20 @@ describe('dry-run (el modo por defecto)', () => {
     assert.deepStrictEqual({ total: i1.total, ok: i1.ok, cambian: i1.cambian }, { total: 2, ok: 1, cambian: 1 });
     const p1 = resumen.detalle.find(x => x.tenantId === 't1' && x.coleccion === 'reportes');
     assert.deepStrictEqual({ total: p1.total, ok: p1.ok, cambian: p1.cambian }, { total: 1, ok: 0, cambian: 1 });
+    const cuenta = (c, t = 't1') => {
+      const x = resumen.detalle.find(d => d.tenantId === t && d.coleccion === c);
+      return { total: x.total, ok: x.ok, cambian: x.cambian, sin: x.sinFecha, raros: x.noInterpretables.length };
+    };
+    assert.deepStrictEqual(cuenta('esp_facturas'),      { total: 1, ok: 0, cambian: 1, sin: 0, raros: 0 });
+    assert.deepStrictEqual(cuenta('arca_facturas'),     { total: 2, ok: 1, cambian: 1, sin: 0, raros: 0 });
+    assert.deepStrictEqual(cuenta('facturas_emitidas'), { total: 1, ok: 0, cambian: 1, sin: 0, raros: 0 });
+    assert.deepStrictEqual(cuenta('paq_facturas'),      { total: 1, ok: 0, cambian: 1, sin: 0, raros: 0 });
+    assert.deepStrictEqual(cuenta('paq_rutas'),         { total: 2, ok: 0, cambian: 1, sin: 0, raros: 1 });
+    assert.deepStrictEqual(cuenta('tras_facturas'),     { total: 1, ok: 0, cambian: 1, sin: 0, raros: 0 });
+    assert.deepStrictEqual(cuenta('tras_viajes'),       { total: 2, ok: 0, cambian: 1, sin: 1, raros: 0 }, 'un viaje sin fecha se cuenta aparte y no se toca');
+    assert.deepStrictEqual(cuenta('tras_reservas'),     { total: 1, ok: 0, cambian: 1, sin: 0, raros: 0 });
     assert.deepStrictEqual({ docs: resumen.docs, cambian: resumen.cambian, noInterpretables: resumen.noInterpretables },
-      { docs: 15, cambian: 9, noInterpretables: 2 });
+      { docs: 26, cambian: 17, noInterpretables: 3 });
   });
 
   test('lista los que no puede interpretar, con empresa, colección, id y valor', async () => {
@@ -97,10 +125,20 @@ describe('dry-run (el modo por defecto)', () => {
     assert.doesNotMatch(salida, /escritos/);
   });
 
-  test('solo mira remitos, egresos, ingresos y reportes (y mira las cuatro)', async () => {
+  const MIRADAS = ['remitos', 'egresos', 'ingresos', 'reportes', 'esp_facturas', 'arca_facturas', 'facturas_emitidas',
+    'paq_facturas', 'paq_rutas', 'tras_facturas', 'tras_viajes', 'tras_reservas'];
+
+  test('mira las 12 colecciones que guardan fechas (remitos, egresos, ingresos, reportes, facturación, paquetería y traslado) y ninguna otra', async () => {
     const { resumen } = await correr(armar());
-    assert.ok(resumen.detalle.every(x => ['remitos', 'egresos', 'ingresos', 'reportes'].includes(x.coleccion)));
-    assert.deepStrictEqual([...new Set(resumen.detalle.map(x => x.coleccion))].sort(), ['egresos', 'ingresos', 'remitos', 'reportes']);
+    assert.deepStrictEqual([...new Set(resumen.detalle.map(x => x.coleccion))].sort(), [...MIRADAS].sort());
+  });
+
+  test('NO mira la colección vieja facturacion, paq_envios, las tablas libres ni ASISTENCIA', async () => {
+    const { resumen, salida } = await correr(armar());
+    for (const c of ['facturacion', 'paq_envios', 'presentacion_docs', 'altas_pres', 'cambio_transporte', 'ASISTENCIA']) {
+      assert.ok(!resumen.detalle.some(x => x.coleccion === c), c);
+      assert.doesNotMatch(salida, new RegExp('/' + c + '[:/]'), c);
+    }
   });
 
   test('ingresos y reportes salen nombrados en la salida, por empresa', async () => {
@@ -115,7 +153,7 @@ describe('--apply', () => {
   test('convierte a dd/MM/yyyy y guarda el valor anterior en fechaOriginal', async () => {
     const db = armar();
     const { resumen } = await correr(db, { apply: true });
-    assert.strictEqual(resumen.escritos, 9);
+    assert.strictEqual(resumen.escritos, 17);
 
     assert.strictEqual(doc(db, 't1', 'remitos', 'r_iso').fecha, '05/11/2026');
     assert.strictEqual(doc(db, 't1', 'remitos', 'r_iso').fechaOriginal, '2026-11-05');
@@ -140,6 +178,26 @@ describe('--apply', () => {
     assert.strictEqual(p.chofer, 'juan@x.com');
   });
 
+  test('facturación, paquetería y traslado se convierten igual, con fechaOriginal, y no tocan fechas anidadas como el historial', async () => {
+    const db = armar();
+    await correr(db, { apply: true });
+    const esperado = [
+      ['esp_facturas', 'ef_iso', '05/11/2026', '2026-11-05'], ['arca_facturas', 'af_corta', '05/11/2026', '5/11/26'],
+      ['facturas_emitidas', 'fe_iso', '06/11/2026', '2026-11-06'], ['paq_facturas', 'pf_iso', '07/11/2026', '2026-11-07'],
+      ['paq_rutas', 'pr_iso', '08/11/2026', '2026-11-08'], ['tras_facturas', 'tf_iso', '09/11/2026', '2026-11-09'],
+      ['tras_viajes', 'tv_iso', '10/11/2026', '2026-11-10'], ['tras_reservas', 'trs_iso', '11/11/2026', '2026-11-11'],
+    ];
+    for (const [c, id, nueva, antes] of esperado) {
+      const d = doc(db, 't1', c, id);
+      assert.deepStrictEqual({ fecha: d.fecha, fechaOriginal: d.fechaOriginal }, { fecha: nueva, fechaOriginal: antes }, c + '/' + id);
+    }
+    // el historial del viaje es un instante ISO a propósito: no se toca
+    assert.strictEqual(doc(db, 't1', 'tras_viajes', 'tv_iso').historial[0].fecha, '2026-11-10T15:00:00.000Z');
+    // lo que no se entiende (una ruta con fecha basura) y un viaje sin fecha no cambian
+    assert.strictEqual(doc(db, 't1', 'paq_rutas', 'pr_rota').fecha, 'basura');
+    assert.strictEqual(doc(db, 't1', 'tras_viajes', 'tv_vacio').fecha, '');
+  });
+
   test('un Date queda como texto dd/MM/yyyy y el original se conserva como estaba', async () => {
     const db = armar();
     await correr(db, { apply: true });
@@ -162,7 +220,9 @@ describe('--apply', () => {
     const db = armar();
     const intactos = [['t1', 'remitos', 'r_ok'], ['t1', 'remitos', 'r_basura'], ['t1', 'remitos', 'r_imposible'],
       ['t1', 'remitos', 'r_sin'], ['t1', 'egresos', 'e_ok'], ['t1', 'ingresos', 'i_ok'],
-      ['t2', 'esp_facturas', 'f_iso']];   // esta última es de otra colección: el script no la mira
+      ['t1', 'arca_facturas', 'af_ok'], ['t1', 'paq_rutas', 'pr_rota'], ['t1', 'tras_viajes', 'tv_vacio'],
+      // colecciones que el script no mira: siguen con su fecha ISO, sin fechaOriginal
+      ['t2', 'facturacion', 'fv_iso'], ['t1', 'paq_envios', 'pe_1'], ['t1', 'presentacion_docs', 'pd_1'], ['t1', 'ASISTENCIA', '2026-11-05_u1']];
     const antes = intactos.map(a => JSON.stringify(doc(db, ...a)));
     await correr(db, { apply: true });
     intactos.forEach((a, i) => assert.strictEqual(JSON.stringify(doc(db, ...a)), antes[i], a.join('/')));
@@ -264,7 +324,8 @@ describe('seguridad de uso', () => {
 
   test('importar el módulo no ejecuta nada (solo corre cuando se lo invoca desde la terminal)', () => {
     assert.strictEqual(typeof M.main, 'function');
-    assert.deepStrictEqual(M.COLECCIONES, ['remitos', 'egresos', 'ingresos', 'reportes']);
+    assert.deepStrictEqual(M.COLECCIONES, ['remitos', 'egresos', 'ingresos', 'reportes', 'esp_facturas', 'arca_facturas', 'facturas_emitidas',
+      'paq_facturas', 'paq_rutas', 'tras_facturas', 'tras_viajes', 'tras_reservas']);
   });
 });
 
