@@ -164,5 +164,8 @@ router.delete('/documentos/:id', verifyToken, requireAdmin, async (req, res) => 
   } catch (e) { errHandler(res, req, e); }
 });
 
+// Lectura de documentos con IA (leer-ia / confirmar-lectura). Rutas nuevas; no cambian las de arriba.
+router.use(require('./legajos-ia')({ prepararArchivo }));
+
 module.exports = router;
 module.exports.estadoGeneral = estadoGeneral;
