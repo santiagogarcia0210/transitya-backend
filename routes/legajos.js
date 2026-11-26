@@ -166,6 +166,8 @@ router.delete('/documentos/:id', verifyToken, requireAdmin, async (req, res) => 
 
 // Lectura de documentos con IA (leer-ia / confirmar-lectura). Rutas nuevas; no cambian las de arriba.
 router.use(require('./legajos-ia')({ prepararArchivo }));
+// Datos clínicos (ver / editar / auditoría): solo puedeVerClinico. Rutas nuevas bajo /:beneficiarioId/clinico.
+router.use(require('./legajos-clinico')());
 
 module.exports = router;
 module.exports.estadoGeneral = estadoGeneral;
