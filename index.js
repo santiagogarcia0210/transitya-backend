@@ -39,6 +39,7 @@ app.use(express.json({ limit: '5mb' }));
 
 // Rutas
 app.use('/api/dashboard', require('./routes/dashboard'));
+app.use('/api/aranceles', require('./routes/aranceles'));
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/beneficiarios', require('./routes/beneficiarios'));
 app.use('/api/registro',      require('./routes/registro'));
