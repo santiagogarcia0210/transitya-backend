@@ -10,7 +10,8 @@ require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') }
 require('../firebase');  // inicializa admin
 
 const { col }                             = require('../utils');
-const { calcularResumenDiario, isoToDMY } = require('../services/resumenDiario');
+const { calcularResumenDiario } = require('../services/resumenDiario');
+const { isoToDMY } = require('../utils/fechas');
 
 const sep  = () => console.log('─'.repeat(60));
 const ok   = (s) => console.log(`  ✅  ${s}`);

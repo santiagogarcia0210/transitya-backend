@@ -1,6 +1,7 @@
 const router = require('express').Router();
 const { verifyToken, requireAdmin } = require('../middleware/auth');
-const { col, parseMonto_, esMesDMY, fechaHoyAR, normalizarText_ } = require('../utils');
+const { col, parseMonto_, fechaHoyAR, normalizarText_ } = require('../utils');
+const { esMesFecha, fechaDoc, mismoDia } = require('../utils/fechas');
 
 const MESES_ES = ['Enero','Febrero','Marzo','Abril','Mayo','Junio',
                   'Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
@@ -45,15 +46,15 @@ router.get('/resumen', verifyToken, requireAdmin, async (req, res) => {
     let bajasMes = 0;
     snapBajas.forEach(d => {
       const fecha = d.data()['FECHA DE BAJA'] || d.data().fechaDeBaja || '';
-      if (esMesDMY(fecha, mes, anio)) bajasMes++;
+      if (esMesFecha(fecha, mes, anio)) bajasMes++;
     });
 
     // ── Egresos ───────────────────────────────────────────────────────
     let egresosMesCount = 0, egresosMesTotal = 0;
     snapEgresos.forEach(d => {
       const doc = d.data();
-      const fecha = doc.fecha || doc.FECHA || '';
-      if (!esMesDMY(fecha, mes, anio)) return;
+      const fecha = fechaDoc(doc);
+      if (!esMesFecha(fecha, mes, anio)) return;
       egresosMesCount++;
       egresosMesTotal += parseMonto_(doc.monto || doc.MONTO || 0);
     });
@@ -70,12 +71,12 @@ router.get('/resumen', verifyToken, requireAdmin, async (req, res) => {
       // that were paid this month appear correctly (PATCH /:id/pagar saves fechaPago)
       if (estado === 'PAGADO') {
         const fechaPago = doc.fechaPago || doc.FECHAPAGO || doc.fecha || doc.FECHA || '';
-        if (esMesDMY(fechaPago, mes, anio)) totalPagadoMes += monto;
+        if (esMesFecha(fechaPago, mes, anio)) totalPagadoMes += monto;
       }
 
       // Count / total / presentado: filter by invoice creation date
-      const fecha = doc.fecha || doc.FECHA || '';
-      if (!esMesDMY(fecha, mes, anio)) return;
+      const fecha = fechaDoc(doc);
+      if (!esMesFecha(fecha, mes, anio)) return;
       ingresosMesCount++;
       ingresosMesTotal += monto;
       if (estado === 'PRESENTADO') totalPresentadoMes += monto;
@@ -85,9 +86,9 @@ router.get('/resumen', verifyToken, requireAdmin, async (req, res) => {
     let kmMes = 0, combustibleMes = 0;
     snapReportes.forEach(d => {
       const doc = d.data();
-      const fecha = doc.fecha || doc.FECHA || '';
-      if (!esMesDMY(fecha, mes, anio)) return;
-      kmMes          += Number(doc['KM RECORRIDOS'] || doc.kmRecorridos || 0);
+      const fecha = fechaDoc(doc);
+      if (!esMesFecha(fecha, mes, anio)) return;
+      kmMes          +=Number(doc['KM RECORRIDOS'] || doc.kmRecorridos || 0);
       combustibleMes += parseMonto_(doc.combustibleImporte || doc['COMBUSTIBLE ($)'] || doc.combustiblePesos || 0);
     });
 
@@ -95,7 +96,8 @@ router.get('/resumen', verifyToken, requireAdmin, async (req, res) => {
     const reportesHoyChoferes = new Set();
     snapReportes.forEach(d => {
       const doc = d.data();
-      if ((doc.fecha || doc.FECHA || '') === hoy) {
+      // Mismo día sin importar el formato guardado: un reporte en ISO de hoy también cuenta como cargado.
+      if (mismoDia(fechaDoc(doc), hoy)) {
         reportesHoyChoferes.add(normalizarText_(doc.chofer || doc.CHOFER || ''));
       }
     });

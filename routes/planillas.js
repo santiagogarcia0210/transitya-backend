@@ -1,6 +1,7 @@
 const router = require('express').Router();
 const { verifyToken, requireAdmin } = require('../middleware/auth');
-const { esMesDMY, fechaHoyAR, col, MESES } = require('../utils');
+const { fechaHoyAR, col, MESES } = require('../utils');
+const { esMesFecha, fechaDoc } = require('../utils/fechas');
 
 const errHandler = (res, req, e) => {
   console.error('[PLANILLAS]', req.path, e.message);
@@ -22,7 +23,7 @@ router.get('/incluir', verifyToken, requireAdmin, async (req, res) => {
     ]);
 
     const facFilas = facSnap.docs.map(d => d.data())
-      .filter(f => esMesDMY(f['FECHA'] || f.fecha || '', m, y));
+      .filter(f => esMesFecha(fechaDoc(f), m, y));
 
     // Index billing rows by afiliado/DNI for quick lookup
     const facPorAfiliado = {};
@@ -82,7 +83,7 @@ router.get('/dj107', verifyToken, requireAdmin, async (req, res) => {
     ]);
 
     const facFilas = facSnap.docs.map(d => d.data())
-      .filter(f => esMesDMY(f['FECHA'] || f.fecha || '', m, y));
+      .filter(f => esMesFecha(fechaDoc(f), m, y));
 
     const facPorAfiliado = {};
     facFilas.forEach(f => {

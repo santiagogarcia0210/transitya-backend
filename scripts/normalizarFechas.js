@@ -1,12 +1,14 @@
 #!/usr/bin/env node
-// Migra las fechas ya guardadas de remitos, egresos, ingresos y reportes al formato dd/MM/yyyy.
+// Migra las fechas ya guardadas de remitos, egresos, ingresos, reportes y facturación (ARCA, especial,
+// emitidas), paquetería (facturas y rutas) y traslado (facturas, viajes y reservas) al formato dd/MM/yyyy.
 //
 // Contexto: algunas rutas guardaban la fecha cruda en ISO (yyyy-MM-dd, lo que manda
 // <input type="date">). Esos documentos no se ordenaban ni entraban en los filtros por fecha.
 // Las rutas ya normalizan al guardar; este script arregla lo que quedó guardado antes.
 //
-// Recorre empresas/*/remitos, empresas/*/egresos, empresas/*/ingresos y empresas/*/reportes
-// (el campo `fecha`, o `FECHA` en los documentos viejos migrados de Sheets).
+// Recorre, en cada empresa, las colecciones de COLECCIONES (abajo). Mira el campo `fecha` (o `FECHA` en los
+// documentos viejos migrados de Sheets) de primer nivel: no toca fechas anidadas como las del historial de un
+// envío o un viaje, que son instantes ISO a propósito.
 //
 //   node scripts/normalizarFechas.js                    DRY-RUN (por defecto): no escribe nada.
 //                                                       Cuenta cuántos documentos cambiaría por
@@ -30,7 +32,19 @@
 const path = require('node:path');
 const { normalizarFecha } = require('../utils/fechas');
 
-const COLECCIONES = ['remitos', 'egresos', 'ingresos', 'reportes'];
+// Las que guardan una `fecha` y que las rutas ya normalizan al guardar. Los nombres salen del código:
+//   remitos.js, egresos.js, ingresos.js, reportes.js
+//   facturacion.js → esp_facturas, arca_facturas, facturas_emitidas
+//   paqueteria.js  → paq_facturas, paq_rutas        (paq_envios guarda `fechaEntrega`, no `fecha`: no entra)
+//   traslado.js    → tras_facturas, tras_viajes, tras_reservas
+// Quedan afuera a propósito: `facturacion` (colección vieja de Sheets, solo se lee), las tablas libres
+// presentacion_docs / altas_pres / cambio_transporte (columnas sin esquema) y ASISTENCIA (guarda ISO a propósito).
+const COLECCIONES = [
+  'remitos', 'egresos', 'ingresos', 'reportes',
+  'esp_facturas', 'arca_facturas', 'facturas_emitidas',
+  'paq_facturas', 'paq_rutas',
+  'tras_facturas', 'tras_viajes', 'tras_reservas',
+];
 const TAMANO_BATCH = 400;
 // Campos de fecha que leen las rutas. Los documentos migrados desde Sheets traen FECHA en mayúsculas.
 const CAMPOS = ['fecha', 'FECHA'];

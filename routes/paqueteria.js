@@ -5,11 +5,14 @@ const {
   normalizarText_, fechaHoyAR, nombreUsuario,
   esMesISO, generarCorrelativo, col, MESES, randomUUID
 } = require('../utils');
+const { normalizarFecha, fechaOHoy, mismoDia, ordenarPorFechaDesc } = require('../utils/fechas');
 
 const errHandler = (res, req, e) => {
   console.error('[PAQUETERIA]', req.path, e.message);
   res.status(500).json({ ok: false, mensaje: e.message });
 };
+
+const MSG_FECHA = 'La fecha no es válida. Usá el formato dd/MM/yyyy (por ejemplo 05/11/2026).';
 
 // ── REPARTIDORES ──────────────────────────────────────────────────────────────
 
@@ -327,7 +330,8 @@ router.get('/rutas', verifyToken, async (req, res) => {
     const { fecha } = req.query;
     const snap = await col(req.tenantId, 'paq_rutas').get();
     let todas = snap.docs.map(d => ({ ...d.data(), _fsId: d.id }));
-    if (fecha) todas = todas.filter(r => r.fecha === fecha);
+    // Mismo día sin importar el formato (2026-11-05, 5/11/26 y 05/11/2026 son el mismo día).
+    if (fecha) todas = todas.filter(r => mismoDia(r.fecha, fecha));
     res.json({ ok: true, rutas: todas, hayMas: todas.length >= 1000 });
   } catch (e) { errHandler(res, req, e); }
 });
@@ -335,9 +339,12 @@ router.get('/rutas', verifyToken, async (req, res) => {
 router.post('/rutas', verifyToken, async (req, res) => {
   try {
     const data = req.body;
+    // Sin fecha: hoy (como siempre). Con fecha: dd/MM/yyyy, o 400 si no se entiende.
+    const fecha = fechaOHoy(data.fecha, fechaHoyAR());
+    if (!fecha) return res.status(400).json({ ok: false, mensaje: MSG_FECHA });
     const id = data.id || randomUUID();
     const doc = {
-      id, fecha: data.fecha || fechaHoyAR(),
+      id, fecha,
       repartidorId: data.repartidorId || '', repartidorNombre: data.repartidorNombre || '',
       envios: data.envios || [], estado: data.estado || 'planificada',
       kmTotal: data.kmTotal || 0, notas: data.notas || '',
@@ -352,7 +359,14 @@ router.put('/rutas/:id', verifyToken, async (req, res) => {
   try {
     const ref = col(req.tenantId, 'paq_rutas').doc(req.params.id);
     if (!(await ref.get()).exists) return res.status(404).json({ ok: false, mensaje: 'No encontrado.' });
-    await ref.update({ ...req.body, actualizadoEn: new Date().toISOString() });
+    const cambios = { ...req.body };
+    // Si la fecha viene se normaliza; si no se entiende (o viene vacía), 400 y no se toca nada.
+    if (cambios.fecha !== undefined) {
+      const fecha = normalizarFecha(cambios.fecha);
+      if (!fecha) return res.status(400).json({ ok: false, mensaje: MSG_FECHA });
+      cambios.fecha = fecha;
+    }
+    await ref.update({ ...cambios, actualizadoEn: new Date().toISOString() });
     res.json({ ok: true });
   } catch (e) { errHandler(res, req, e); }
 });
@@ -375,7 +389,7 @@ router.get('/facturas', verifyToken, requireAdmin, async (req, res) => {
     let todas = snap.docs.map(d => ({ ...d.data(), _fsId: d.id }));
     if (clienteId) todas = todas.filter(f => f.clienteId === clienteId);
     if (estado)    todas = todas.filter(f => f.estado === estado);
-    todas.sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || '')));
+    ordenarPorFechaDesc(todas);
     const pp = Number(porPagina) || 50;
     const pg = Math.max(1, Number(pagina) || 1);
     res.json({ ok: true, facturas: todas.slice((pg - 1) * pp, pg * pp), total: todas.length, pagina: pg, paginas: Math.max(1, Math.ceil(todas.length / pp)) });
@@ -385,6 +399,10 @@ router.get('/facturas', verifyToken, requireAdmin, async (req, res) => {
 router.post('/facturas', verifyToken, requireAdmin, async (req, res) => {
   try {
     const data = req.body;
+    // Sin fecha: hoy (como siempre). Con fecha: dd/MM/yyyy, o 400. Se valida ANTES de generar el correlativo:
+    // un rechazo no gasta un número de factura. La misma fecha se copia al ingreso.
+    const fecha = fechaOHoy(data.fecha, fechaHoyAR());
+    if (!fecha) return res.status(400).json({ ok: false, mensaje: MSG_FECHA });
     const esNueva = !data.id;
     const id = data.id || randomUUID();
     const tipoFac = String(data.tipoFactura || 'X').toUpperCase();
@@ -412,7 +430,7 @@ router.post('/facturas', verifyToken, requireAdmin, async (req, res) => {
       total: Number(data.total) || 0, descuento: Number(data.descuento) || 0,
       condicionVenta: String(data.condicionVenta || 'Contado').trim(),
       observaciones: String(data.observaciones || '').trim(),
-      estado: data.estado || 'pendiente', fecha: data.fecha || fechaHoyAR(),
+      estado: data.estado || 'pendiente', fecha,
       fechaPago: data.fechaPago || '', ingresoId: data.ingresoId || '',
       creadoPor: nombreUsuario(req.user),
       creadoEn: esNueva ? new Date().toISOString() : (data.creadoEn || new Date().toISOString()),
@@ -486,7 +504,14 @@ router.put('/facturas/:id', verifyToken, requireAdmin, async (req, res) => {
   try {
     const ref = col(req.tenantId, 'paq_facturas').doc(req.params.id);
     if (!(await ref.get()).exists) return res.status(404).json({ ok: false, mensaje: 'Factura no encontrada.' });
-    await ref.update({ ...req.body, actualizadoEn: new Date().toISOString() });
+    const cambios = { ...req.body };
+    // Si la fecha viene se normaliza; si no se entiende (o viene vacía), 400 y no se toca nada.
+    if (cambios.fecha !== undefined) {
+      const fecha = normalizarFecha(cambios.fecha);
+      if (!fecha) return res.status(400).json({ ok: false, mensaje: MSG_FECHA });
+      cambios.fecha = fecha;
+    }
+    await ref.update({ ...cambios, actualizadoEn: new Date().toISOString() });
     res.json({ ok: true });
   } catch (e) { errHandler(res, req, e); }
 });
