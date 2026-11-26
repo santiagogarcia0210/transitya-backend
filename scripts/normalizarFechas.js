@@ -1,11 +1,12 @@
 #!/usr/bin/env node
-// Migra las fechas ya guardadas de remitos y egresos al formato dd/MM/yyyy.
+// Migra las fechas ya guardadas de remitos, egresos, ingresos y reportes al formato dd/MM/yyyy.
 //
 // Contexto: algunas rutas guardaban la fecha cruda en ISO (yyyy-MM-dd, lo que manda
 // <input type="date">). Esos documentos no se ordenaban ni entraban en los filtros por fecha.
 // Las rutas ya normalizan al guardar; este script arregla lo que quedó guardado antes.
 //
-// Recorre empresas/*/remitos y empresas/*/egresos.
+// Recorre empresas/*/remitos, empresas/*/egresos, empresas/*/ingresos y empresas/*/reportes
+// (el campo `fecha`, o `FECHA` en los documentos viejos migrados de Sheets).
 //
 //   node scripts/normalizarFechas.js                    DRY-RUN (por defecto): no escribe nada.
 //                                                       Cuenta cuántos documentos cambiaría por
@@ -21,10 +22,15 @@
 //
 // OJO: usa FIREBASE_SA, o sea la base a la que apunte tu .env (en esta máquina, producción).
 // El dry-run solo lee. Solo --apply escribe.
+//
+// El .env se carga solo (el de la raíz del repo, sin importar desde dónde se corra el comando), pero
+// únicamente al ejecutarlo desde la terminal: importar este módulo (por ejemplo desde los tests) no lee
+// ningún .env.
 
+const path = require('node:path');
 const { normalizarFecha } = require('../utils/fechas');
 
-const COLECCIONES = ['remitos', 'egresos'];
+const COLECCIONES = ['remitos', 'egresos', 'ingresos', 'reportes'];
 const TAMANO_BATCH = 400;
 // Campos de fecha que leen las rutas. Los documentos migrados desde Sheets traen FECHA en mayúsculas.
 const CAMPOS = ['fecha', 'FECHA'];
@@ -127,7 +133,18 @@ async function main({ db, apply = false, tenant = null, log = console.log } = {}
   return resumen;
 }
 
-module.exports = { main, clasificar, analizar, aplicar, TAMANO_BATCH, COLECCIONES };
+const RUTA_ENV = path.join(__dirname, '..', '.env');
+
+/**
+ * Carga el .env en process.env. Por defecto el de la raíz del repo (no el del directorio actual).
+ * DOTENV_CONFIG_PATH permite apuntar a otro (lo usan los tests). Nunca pisa una variable que ya esté
+ * definida en el entorno, y si el archivo no existe no falla (en Railway las variables vienen del entorno).
+ */
+function cargarEntorno(ruta = process.env.DOTENV_CONFIG_PATH || RUTA_ENV) {
+  return require('dotenv').config({ path: ruta, quiet: true });
+}
+
+module.exports = { main, clasificar, analizar, aplicar, cargarEntorno, RUTA_ENV, TAMANO_BATCH, COLECCIONES };
 
 if (require.main === module) {
   const args = process.argv.slice(2);
@@ -138,6 +155,8 @@ if (require.main === module) {
     console.error(`Argumento desconocido: ${raros.join(' ')}\nUso: node scripts/normalizarFechas.js [--apply] [--tenant=<id>]`);
     process.exit(2);
   }
+  // Después de validar los argumentos y ANTES de cargar firebase.js, que lee FIREBASE_SA al requerirse.
+  cargarEntorno();
   const { db, admin } = require('../firebase');
   try { console.log('Proyecto Firebase:', admin.app().options.projectId); } catch { /* sin app: main() avisa */ }
   main({ db, apply, tenant })

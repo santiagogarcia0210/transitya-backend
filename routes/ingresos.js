@@ -1,18 +1,14 @@
 const router = require('express').Router();
 const { verifyToken, requireAdmin } = require('../middleware/auth');
-const { parseMonto_, normalizarText_, esMesDMY, fechaHoyAR, col, MESES, randomUUID } = require('../utils');
+const { parseMonto_, normalizarText_, fechaHoyAR, col, MESES, randomUUID } = require('../utils');
+const { normalizarFecha, fechaToDate, fechaDoc, esMesFecha, ordenarPorFechaDesc } = require('../utils/fechas');
 
 const errHandler = (res, req, e) => {
   console.error('[INGRESOS]', req.path, e.message);
   res.status(500).json({ ok: false, mensaje: e.message });
 };
 
-const fechaSort = (f) => {
-  const p = String(f || '').split('/');
-  if (p.length < 3) return 0;
-  const y = p[2].length === 2 ? '20' + p[2] : p[2];
-  return Number(`${y}${p[1].padStart(2, '0')}${p[0].padStart(2, '0')}`);
-};
+const MSG_FECHA = 'La fecha no es válida. Usá el formato dd/MM/yyyy (por ejemplo 05/11/2026).';
 
 // GET /reporte-mensual must be before GET /:id
 router.get('/reporte-mensual', verifyToken, requireAdmin, async (req, res) => {
@@ -24,7 +20,7 @@ router.get('/reporte-mensual', verifyToken, requireAdmin, async (req, res) => {
     const filas = todos.filter(doc => {
       const estado = normalizarText_(doc.estado || doc.ESTADO || '');
       if (estado === 'presentado') return true;
-      return esMesDMY(doc.fecha || doc.FECHA || '', m, y);
+      return esMesFecha(fechaDoc(doc), m, y);
     });
     const total     = filas.reduce((s, r) => s + parseMonto_(r.monto || r.MONTO || 0), 0);
     const pagado    = filas.filter(r => normalizarText_(r.estado || r.ESTADO || '') === 'pagado')
@@ -39,7 +35,7 @@ router.get('/reporte-mensual', verifyToken, requireAdmin, async (req, res) => {
 
 router.get('/', verifyToken, requireAdmin, async (req, res) => {
   try {
-    const { q, page, limit, mes, anio, estado } = req.query;
+    const { q, page, limit, mes, anio, estado, desde, hasta } = req.query;
     const snap = await col(req.tenantId, 'ingresos').get();
     let todos = snap.docs.map(d => ({ id: d.id, ...d.data() }));
 
@@ -50,7 +46,21 @@ router.get('/', verifyToken, requireAdmin, async (req, res) => {
       todos = todos.filter(doc => {
         const est = normalizarText_(doc.estado || doc.ESTADO || '');
         if (est === 'presentado') return true;
-        return esMesDMY(doc.fecha || doc.FECHA || '', m, y);
+        return esMesFecha(fechaDoc(doc), m, y);
+      });
+    }
+
+    if (desde || hasta) {
+      // desde/hasta llegan en ISO (input type=date); fechaToDate entiende ISO y dd/MM/yyyy.
+      // Un límite que no se entiende se ignora; los documentos sin fecha válida quedan afuera.
+      const d = fechaToDate(desde);
+      const h = fechaToDate(hasta);
+      todos = todos.filter(doc => {
+        const df = fechaToDate(fechaDoc(doc));
+        if (!df) return false;
+        if (d && df < d) return false;
+        if (h && df > h) return false;
+        return true;
       });
     }
 
@@ -64,7 +74,8 @@ router.get('/', verifyToken, requireAdmin, async (req, res) => {
       todos = todos.filter(doc => normalizarText_(Object.values(doc).join(' ')).includes(qn));
     }
 
-    todos.sort((a, b) => fechaSort(b.fecha || b.FECHA) - fechaSort(a.fecha || a.FECHA));
+    // Fecha desc; a igual fecha, el cargado más tarde primero. Sin fecha válida, al final.
+    ordenarPorFechaDesc(todos);
 
     const pp    = Math.max(1, parseInt(limit) || 50);
     const pg    = Math.max(1, parseInt(page) || 1);
@@ -94,8 +105,13 @@ router.get('/', verifyToken, requireAdmin, async (req, res) => {
 router.post('/', verifyToken, requireAdmin, async (req, res) => {
   try {
     const data = { ...req.body };
-    const fecha = String(data.fecha || data.FECHA || '').trim();
-    if (!fecha) return res.status(400).json({ ok: false, mensaje: 'Falta la fecha.' });
+    // La fecha es obligatoria y se guarda siempre como dd/MM/yyyy (el input type=date manda ISO).
+    // Se sigue aceptando la clave en mayúsculas (FECHA); se guarda como `fecha`.
+    const cruda = [data.fecha, data.FECHA].find(v => v !== undefined && v !== null && String(v).trim() !== '');
+    const fecha = normalizarFecha(cruda);
+    if (!fecha) return res.status(400).json({ ok: false, mensaje: cruda === undefined ? 'Falta la fecha del ingreso.' : MSG_FECHA });
+    data.fecha = fecha;
+    delete data.FECHA;
     const id = String(data.ID || data.id || '').trim() || randomUUID();
     data.ID     = id;
     data.ESTADO = String(data.estado || data.ESTADO || 'PRESENTADO').trim().toUpperCase();
@@ -117,7 +133,16 @@ router.patch('/:id/pagar', verifyToken, requireAdmin, async (req, res) => {
 
 router.put('/:id', verifyToken, requireAdmin, async (req, res) => {
   try {
-    await col(req.tenantId, 'ingresos').doc(req.params.id).update(req.body);
+    const data = { ...req.body };
+    // Si la fecha viene en el cuerpo se normaliza; si no se entiende (o viene vacía), 400 y no se toca nada.
+    // Sin fecha en el cuerpo no se la toca: lo ya guardado en otro formato lo arregla el script de migración.
+    for (const k of ['fecha', 'FECHA']) {
+      if (data[k] === undefined) continue;
+      const fecha = normalizarFecha(data[k]);
+      if (!fecha) return res.status(400).json({ ok: false, mensaje: MSG_FECHA });
+      data[k] = fecha;
+    }
+    await col(req.tenantId, 'ingresos').doc(req.params.id).update(data);
     res.json({ ok: true });
   } catch (e) { errHandler(res, req, e); }
 });

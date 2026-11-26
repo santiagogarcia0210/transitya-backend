@@ -290,3 +290,40 @@ describe('helpers de calendario (hoyAR, sumarDias, diaSemana, esDiaHabil, varian
     assert.deepStrictEqual(variantesFecha('25/11/2026'), ['2026-11-25', '25/11/2026'], 'sin ceros no hay variante extra');
   });
 });
+
+describe('esMesFecha: el reemplazo de esMesDMY que sí entiende ISO', () => {
+  const { esMesFecha } = F;
+
+  test('acepta todos los formatos que entiende normalizarFecha', () => {
+    for (const f of ['05/11/2026', '5/11/26', '2026-11-05', '2026-11-05T14:30:00', '05-11-2026', new Date('2026-11-05T15:00:00Z')]) {
+      assert.strictEqual(esMesFecha(f, 11, 2026), true, String(f));
+    }
+  });
+
+  test('REGRESIÓN: una fecha ISO cae en su mes (esMesDMY partía por "/" y la dejaba afuera)', () => {
+    // Copia de utils.esMesDMY (no se importa utils.js para no cargar Firebase en las pruebas).
+    const esMesDMY = (fecha, m, y) => {
+      const p = String(fecha || '').split('/');
+      if (p.length < 3) return false;
+      return Number(p[1]) === m && Number(p[2].length === 2 ? '20' + p[2] : p[2]) === y;
+    };
+    assert.strictEqual(esMesDMY('2026-11-05', 11, 2026), false, 'el defecto original');
+    assert.strictEqual(esMesFecha('2026-11-05', 11, 2026), true);
+  });
+
+  test('otro mes u otro año da false; mes y año pueden venir como texto', () => {
+    assert.strictEqual(esMesFecha('2026-10-31', 11, 2026), false);
+    assert.strictEqual(esMesFecha('05/11/2025', 11, 2026), false);
+    assert.strictEqual(esMesFecha('05/11/2026', '11', '2026'), true);
+  });
+
+  test('un instante cerca de medianoche se cuenta en el mes de Argentina, no en el de UTC', () => {
+    // 01:30 UTC del 1/12 todavía es 30/11 en Argentina (UTC-3)
+    assert.strictEqual(esMesFecha('2026-12-01T01:30:00.000Z', 11, 2026), true);
+    assert.strictEqual(esMesFecha('2026-12-01T01:30:00.000Z', 12, 2026), false);
+  });
+
+  test('una fecha que no se entiende o vacía da false', () => {
+    for (const f of ['basura', '31/02/2026', '', null, undefined, {}]) assert.strictEqual(esMesFecha(f, 11, 2026), false, String(f));
+  });
+});

@@ -103,6 +103,18 @@ function fechaToDate(f) {
  */
 const fechaDoc = doc => normalizarFecha(doc && doc.fecha) || normalizarFecha(doc && doc.FECHA);
 
+/**
+ * ¿Esa fecha (en cualquier formato que entienda normalizarFecha) cae en el mes `m` (1-12) del año `y`?
+ * Es el reemplazo de utils.esMesDMY, que solo parte por "/" y por eso deja afuera de los filtros por
+ * mes a los documentos guardados en ISO (yyyy-MM-dd). Una fecha que no se entiende da false.
+ */
+function esMesFecha(f, m, y) {
+  const n = normalizarFecha(f);
+  if (!n) return false;
+  const [, mes, anio] = n.split('/');
+  return Number(mes) === Number(m) && Number(anio) === Number(y);
+}
+
 /** Milisegundos de un Timestamp de Firestore, Date, ISO, número o {seconds}; 0 si falta o no se entiende. */
 function timestampMs(v) {
   if (v === null || v === undefined || v === '') return 0;
@@ -174,6 +186,6 @@ function variantesFecha(f) {
 }
 
 module.exports = {
-  normalizarFecha, fechaSort, fechaToDate, fechaDoc, timestampMs, ordenarPorFechaDesc,
+  normalizarFecha, fechaSort, fechaToDate, fechaDoc, esMesFecha, timestampMs, ordenarPorFechaDesc,
   hoyAR, sumarDias, diaSemana, nombreDiaSemana, esDiaHabil, variantesFecha,
 };

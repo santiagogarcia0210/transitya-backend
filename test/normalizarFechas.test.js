@@ -1,5 +1,5 @@
 /**
- * scripts/normalizarFechas.js: migración de las fechas ya guardadas de remitos y egresos.
+ * scripts/normalizarFechas.js: migración de las fechas ya guardadas de remitos, egresos, ingresos y reportes.
  *
  * Todo contra un Firestore en memoria: estas pruebas nunca tocan una base real, ni siquiera en
  * dry-run. Lo que importa verificar:
@@ -13,6 +13,8 @@
 const { test, describe } = require('node:test');
 const assert = require('node:assert');
 const path = require('node:path');
+const fs = require('node:fs');
+const os = require('node:os');
 const { spawnSync } = require('node:child_process');
 
 const { fakeDb } = require('./helpers/fakeFirestore');
@@ -42,7 +44,10 @@ function armar() {
   set('t1', 'egresos', 'e_iso',       { fecha: '2026-10-20' });
   set('t1', 'egresos', 'e_ok',        { fecha: '20/10/2026' });
   set('t2', 'remitos', 'x_iso',       { fecha: '2026-09-01' });
-  set('t1', 'ingresos', 'i_iso',      { fecha: '2026-11-05' });                              // otra colección: no se toca
+  set('t1', 'ingresos', 'i_iso',      { fecha: '2026-11-05' });                              // ingresos: también se migra
+  set('t1', 'ingresos', 'i_ok',       { fecha: '05/11/2026' });
+  set('t1', 'reportes', 'p_iso',      { fecha: '2026-11-06', chofer: 'juan@x.com' });        // reportes de km: también se migra
+  set('t2', 'esp_facturas', 'f_iso',  { fecha: '2026-11-05' });                              // otra colección: no se toca
   return db;
 }
 
@@ -74,8 +79,12 @@ describe('dry-run (el modo por defecto)', () => {
     assert.deepStrictEqual({ total: e1.total, ok: e1.ok, cambian: e1.cambian }, { total: 2, ok: 1, cambian: 1 });
     const x2 = resumen.detalle.find(x => x.tenantId === 't2' && x.coleccion === 'remitos');
     assert.strictEqual(x2.cambian, 1);
+    const i1 = resumen.detalle.find(x => x.tenantId === 't1' && x.coleccion === 'ingresos');
+    assert.deepStrictEqual({ total: i1.total, ok: i1.ok, cambian: i1.cambian }, { total: 2, ok: 1, cambian: 1 });
+    const p1 = resumen.detalle.find(x => x.tenantId === 't1' && x.coleccion === 'reportes');
+    assert.deepStrictEqual({ total: p1.total, ok: p1.ok, cambian: p1.cambian }, { total: 1, ok: 0, cambian: 1 });
     assert.deepStrictEqual({ docs: resumen.docs, cambian: resumen.cambian, noInterpretables: resumen.noInterpretables },
-      { docs: 12, cambian: 7, noInterpretables: 2 });
+      { docs: 15, cambian: 9, noInterpretables: 2 });
   });
 
   test('lista los que no puede interpretar, con empresa, colección, id y valor', async () => {
@@ -88,9 +97,17 @@ describe('dry-run (el modo por defecto)', () => {
     assert.doesNotMatch(salida, /escritos/);
   });
 
-  test('solo mira remitos y egresos', async () => {
+  test('solo mira remitos, egresos, ingresos y reportes (y mira las cuatro)', async () => {
     const { resumen } = await correr(armar());
-    assert.ok(resumen.detalle.every(x => ['remitos', 'egresos'].includes(x.coleccion)));
+    assert.ok(resumen.detalle.every(x => ['remitos', 'egresos', 'ingresos', 'reportes'].includes(x.coleccion)));
+    assert.deepStrictEqual([...new Set(resumen.detalle.map(x => x.coleccion))].sort(), ['egresos', 'ingresos', 'remitos', 'reportes']);
+  });
+
+  test('ingresos y reportes salen nombrados en la salida, por empresa', async () => {
+    const { salida } = await correr(armar());
+    assert.match(salida, /t1\/ingresos: 2 docs · 1 ya en dd\/MM\/yyyy · 1 cambiaría/);
+    assert.match(salida, /t1\/reportes: 1 docs · 0 ya en dd\/MM\/yyyy · 1 cambiaría/);
+    assert.match(salida, /ej: "2026-11-06"\s+→\s+"06\/11\/2026"/, 'el ejemplo de reportes');
   });
 });
 
@@ -98,7 +115,7 @@ describe('--apply', () => {
   test('convierte a dd/MM/yyyy y guarda el valor anterior en fechaOriginal', async () => {
     const db = armar();
     const { resumen } = await correr(db, { apply: true });
-    assert.strictEqual(resumen.escritos, 7);
+    assert.strictEqual(resumen.escritos, 9);
 
     assert.strictEqual(doc(db, 't1', 'remitos', 'r_iso').fecha, '05/11/2026');
     assert.strictEqual(doc(db, 't1', 'remitos', 'r_iso').fechaOriginal, '2026-11-05');
@@ -108,6 +125,19 @@ describe('--apply', () => {
     assert.strictEqual(doc(db, 't1', 'remitos', 'r_iso_hora').fechaOriginal, '2026-11-06T01:30:00.000Z');
     assert.strictEqual(doc(db, 't1', 'egresos', 'e_iso').fecha, '20/10/2026');
     assert.strictEqual(doc(db, 't2', 'remitos', 'x_iso').fecha, '01/09/2026');
+  });
+
+  test('ingresos y reportes se convierten igual y conservan el resto de sus campos', async () => {
+    const db = armar();
+    await correr(db, { apply: true });
+    const i = doc(db, 't1', 'ingresos', 'i_iso');
+    assert.strictEqual(i.fecha, '05/11/2026');
+    assert.strictEqual(i.fechaOriginal, '2026-11-05');
+    assert.strictEqual(i.monto, 100);
+    const p = doc(db, 't1', 'reportes', 'p_iso');
+    assert.strictEqual(p.fecha, '06/11/2026');
+    assert.strictEqual(p.fechaOriginal, '2026-11-06');
+    assert.strictEqual(p.chofer, 'juan@x.com');
   });
 
   test('un Date queda como texto dd/MM/yyyy y el original se conserva como estaba', async () => {
@@ -131,7 +161,8 @@ describe('--apply', () => {
   test('NO toca lo que ya estaba bien, lo que no se entiende, lo que no tiene fecha ni otras colecciones', async () => {
     const db = armar();
     const intactos = [['t1', 'remitos', 'r_ok'], ['t1', 'remitos', 'r_basura'], ['t1', 'remitos', 'r_imposible'],
-      ['t1', 'remitos', 'r_sin'], ['t1', 'egresos', 'e_ok'], ['t1', 'ingresos', 'i_iso']];
+      ['t1', 'remitos', 'r_sin'], ['t1', 'egresos', 'e_ok'], ['t1', 'ingresos', 'i_ok'],
+      ['t2', 'esp_facturas', 'f_iso']];   // esta última es de otra colección: el script no la mira
     const antes = intactos.map(a => JSON.stringify(doc(db, ...a)));
     await correr(db, { apply: true });
     intactos.forEach((a, i) => assert.strictEqual(JSON.stringify(doc(db, ...a)), antes[i], a.join('/')));
@@ -233,7 +264,67 @@ describe('seguridad de uso', () => {
 
   test('importar el módulo no ejecuta nada (solo corre cuando se lo invoca desde la terminal)', () => {
     assert.strictEqual(typeof M.main, 'function');
-    assert.deepStrictEqual(M.COLECCIONES, ['remitos', 'egresos']);
+    assert.deepStrictEqual(M.COLECCIONES, ['remitos', 'egresos', 'ingresos', 'reportes']);
+  });
+});
+
+describe('dotenv: el comando normal (node scripts/normalizarFechas.js) lee el .env', () => {
+  const SCRIPT = path.join(RAIZ, 'scripts', 'normalizarFechas.js');
+  const MARCADOR = 'MARCADOR_DOTENV_123';
+
+  /** Carpeta temporal con un .env adentro. */
+  const conEnv = contenido => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'norm-fechas-'));
+    const archivo = path.join(dir, '.env');
+    if (contenido !== null) fs.writeFileSync(archivo, contenido);
+    return { dir, archivo, borrar: () => fs.rmSync(dir, { recursive: true, force: true }) };
+  };
+
+  test('cargarEntorno() lee el archivo, no pisa lo que ya está definido y no falla si no existe', () => {
+    const t = conEnv('NORM_PRUEBA_NUEVA=hola\nNORM_PRUEBA_EXISTENTE=desde-el-archivo\n');
+    delete process.env.NORM_PRUEBA_NUEVA;
+    process.env.NORM_PRUEBA_EXISTENTE = 'ya-estaba';
+    try {
+      const r = M.cargarEntorno(t.archivo);
+      assert.strictEqual(r.error, undefined);
+      assert.strictEqual(process.env.NORM_PRUEBA_NUEVA, 'hola', 'carga lo que no estaba');
+      assert.strictEqual(process.env.NORM_PRUEBA_EXISTENTE, 'ya-estaba', 'no pisa una variable ya definida');
+      assert.doesNotThrow(() => M.cargarEntorno(path.join(t.dir, 'no-existe.env')), 'sin archivo no falla');
+    } finally {
+      delete process.env.NORM_PRUEBA_NUEVA; delete process.env.NORM_PRUEBA_EXISTENTE; t.borrar();
+    }
+  });
+
+  test('por defecto apunta al .env de la raíz del repo, no al del directorio actual', () => {
+    assert.strictEqual(M.RUTA_ENV, path.join(RAIZ, '.env'));
+  });
+
+  test('el script cargado desde la terminal lee el .env ANTES de iniciar Firebase (probado desde otro directorio, sin tocar ninguna base)', () => {
+    const t = conEnv(`FIREBASE_SA=${MARCADOR}\n`);
+    const otroDir = fs.mkdtempSync(path.join(os.tmpdir(), 'norm-fechas-cwd-'));
+    try {
+      const env = { ...process.env, DOTENV_CONFIG_PATH: t.archivo };
+      delete env.FIREBASE_SA;
+      const r = spawnSync(process.execPath, [SCRIPT], { cwd: otroDir, encoding: 'utf8', env });
+      // firebase.js muestra los primeros caracteres de FIREBASE_SA: si dotenv corrió antes, sale el marcador.
+      assert.match(r.stdout, new RegExp(`SA first 50 chars: ${MARCADOR}`), 'firebase.js vio la variable del .env');
+      // El marcador no es un JSON válido, así que no hay conexión: falla con un mensaje claro y sin escribir nada.
+      assert.strictEqual(r.status, 1);
+      assert.match(r.stderr, /No hay conexión a Firestore/);
+    } finally { t.borrar(); fs.rmSync(otroDir, { recursive: true, force: true }); }
+  });
+
+  test('control: sin ese .env, firebase.js no ve ninguna variable (el marcador salía del archivo)', () => {
+    const t = conEnv(null);   // carpeta sin .env
+    const otroDir = fs.mkdtempSync(path.join(os.tmpdir(), 'norm-fechas-cwd-'));
+    try {
+      const env = { ...process.env, DOTENV_CONFIG_PATH: t.archivo };   // apunta a un archivo que no existe
+      delete env.FIREBASE_SA;
+      const r = spawnSync(process.execPath, [SCRIPT], { cwd: otroDir, encoding: 'utf8', env });
+      assert.match(r.stdout, /SA first 50 chars: MISSING/);
+      assert.doesNotMatch(r.stdout, new RegExp(MARCADOR));
+      assert.strictEqual(r.status, 1);
+    } finally { t.borrar(); fs.rmSync(otroDir, { recursive: true, force: true }); }
   });
 });
 
