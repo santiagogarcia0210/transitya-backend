@@ -1,6 +1,7 @@
 const router = require('express').Router();
 const { verifyToken, requireAdmin, requireModulo } = require('../middleware/auth');
-const { normalizarText_, parseMonto_, fechaHoyAR, esMesDMY, col, MESES, randomUUID } = require('../utils');
+const { normalizarText_, parseMonto_, fechaHoyAR, col, MESES, randomUUID } = require('../utils');
+const { normalizarFecha, fechaDoc, esMesFecha, ordenarPorFechaDesc } = require('../utils/fechas');
 const { subirFoto } = require('../helpers/storage');
 
 const errHandler = (res, req, e) => {
@@ -8,12 +9,7 @@ const errHandler = (res, req, e) => {
   res.status(500).json({ ok: false, mensaje: e.message });
 };
 
-const fechaSort = (f) => {
-  const p = String(f || '').split('/');
-  if (p.length < 3) return 0;
-  const y = p[2].length === 2 ? '20' + p[2] : p[2];
-  return Number(`${y}${p[1].padStart(2, '0')}${p[0].padStart(2, '0')}`);
-};
+const MSG_FECHA = 'La fecha no es válida. Usá el formato dd/MM/yyyy (por ejemplo 05/11/2026).';
 
 const isAdmin = (user) => user.rol === 'admin' || user.rol === 'administrador';
 
@@ -21,9 +17,13 @@ const isAdmin = (user) => user.rol === 'admin' || user.rol === 'administrador';
 router.get('/diario', verifyToken, requireModulo('reportes'), async (req, res) => {
   try {
     const fechaBuscar = req.query.fecha || fechaHoyAR();
+    // Se compara por día, sin importar en qué formato llegó o quedó guardada cada fecha (2026-11-05 y
+    // 05/11/2026 son el mismo día). Si la pedida no se entiende no hay nada que comparar: '' no puede
+    // igualarse con los documentos sin fecha válida.
+    const buscada = normalizarFecha(fechaBuscar);
     const snap = await col(req.tenantId, 'reportes').get();
-    let filas = snap.docs.map(d => ({ id: d.id, ...d.data() }))
-      .filter(doc => String(doc.fecha || doc.FECHA || '').trim() === fechaBuscar);
+    let filas = !buscada ? [] : snap.docs.map(d => ({ id: d.id, ...d.data() }))
+      .filter(doc => fechaDoc(doc) === buscada);
 
     if (!isAdmin(req.user)) {
       filas = filas.filter(doc =>
@@ -31,8 +31,8 @@ router.get('/diario', verifyToken, requireModulo('reportes'), async (req, res) =
       );
     }
 
-    if (!filas.length) return res.json({ ok: true, datos: null, filas: [], fecha: fechaBuscar });
-    res.json({ ok: true, datos: filas[0], filas, fecha: fechaBuscar });
+    if (!filas.length) return res.json({ ok: true, datos: null, filas: [], fecha: buscada || fechaBuscar });
+    res.json({ ok: true, datos: filas[0], filas, fecha: buscada });
   } catch (e) { errHandler(res, req, e); }
 });
 
@@ -45,7 +45,7 @@ router.get('/mensual', verifyToken, requireModulo('reportes'), async (req, res) 
 
     let kmTotal = 0, costoTotal = 0, litrosTotal = 0, diasTrab = 0;
     const filas = todos.filter(doc => {
-      if (!esMesDMY(doc.fecha || doc.FECHA || '', m, y)) return false;
+      if (!esMesFecha(fechaDoc(doc), m, y)) return false;
       if (!isAdmin(req.user) &&
           normalizarText_(doc.chofer || doc.CHOFER || '') !== normalizarText_(req.user.email)) return false;
       return true;
@@ -81,7 +81,7 @@ router.get('/', verifyToken, requireModulo('reportes'), async (req, res) => {
     if (mes || anio) {
       const m = Number(mes)  || (new Date().getMonth() + 1);
       const y = Number(anio) || new Date().getFullYear();
-      todos = todos.filter(doc => esMesDMY(doc.fecha || doc.FECHA || '', m, y));
+      todos = todos.filter(doc => esMesFecha(fechaDoc(doc), m, y));
     }
 
     if (q) {
@@ -89,7 +89,8 @@ router.get('/', verifyToken, requireModulo('reportes'), async (req, res) => {
       todos = todos.filter(doc => normalizarText_(Object.values(doc).join(' ')).includes(qn));
     }
 
-    todos.sort((a, b) => fechaSort(b.fecha || b.FECHA) - fechaSort(a.fecha || a.FECHA));
+    // Fecha desc; a igual fecha, el cargado más tarde primero. Sin fecha válida, al final.
+    ordenarPorFechaDesc(todos);
 
     const pp    = Math.max(1, parseInt(limit) || 50);
     const pg    = Math.max(1, parseInt(page) || 1);
@@ -106,6 +107,15 @@ router.get('/', verifyToken, requireModulo('reportes'), async (req, res) => {
 router.post('/', verifyToken, requireModulo('reportes'), async (req, res) => {
   try {
     const data = { ...req.body };
+
+    // La fecha del reporte es obligatoria y se guarda siempre como dd/MM/yyyy (el input type=date manda
+    // ISO). Se valida ANTES de subir las fotos: un reporte rechazado no deja archivos huérfanos.
+    // Se sigue aceptando la clave en mayúsculas (FECHA); se guarda como `fecha`.
+    const cruda = [data.fecha, data.FECHA].find(v => v !== undefined && v !== null && String(v).trim() !== '');
+    const fecha = normalizarFecha(cruda);
+    if (!fecha) return res.status(400).json({ ok: false, mensaje: cruda === undefined ? 'Falta la fecha del reporte.' : MSG_FECHA });
+    data.fecha = fecha;
+    delete data.FECHA;
 
     const fotoIni = data.fotoIniBase64 || data.FOTO_INI_B64;
     const fotoFin = data.fotoFinBase64 || data.FOTO_FIN_B64;
@@ -153,6 +163,14 @@ router.put('/:id', verifyToken, requireModulo('reportes'), async (req, res) => {
         return res.status(403).json({ ok: false, mensaje: 'Sin permisos' });
     }
     const data = { ...req.body };
+    // Si la fecha viene en el cuerpo se normaliza; si no se entiende (o viene vacía), 400 y no se toca
+    // nada. Sin fecha en el cuerpo no se la toca: lo ya guardado en otro formato lo arregla el script.
+    for (const k of ['fecha', 'FECHA']) {
+      if (data[k] === undefined) continue;
+      const fecha = normalizarFecha(data[k]);
+      if (!fecha) return res.status(400).json({ ok: false, mensaje: MSG_FECHA });
+      data[k] = fecha;
+    }
     const fotoIni = data.fotoIniBase64 || data.FOTO_INI_B64;
     const fotoFin = data.fotoFinBase64 || data.FOTO_FIN_B64;
     const mime    = data.mimeTypeFotos || 'image/jpeg';
