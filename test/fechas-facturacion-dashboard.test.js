@@ -203,8 +203,8 @@ describe('planillas: la facturación del mes entra con cualquier formato de fech
   const sembrado = () => {
     const m = cargar();
     sembrar(m.db, 'registro', {
-      r1: { 'APELLIDO Y NOMBRE': 'Ana', 'N° AFILIADO': '111' }, r2: { 'APELLIDO Y NOMBRE': 'Beto', 'N° AFILIADO': '222' },
-      r3: { 'APELLIDO Y NOMBRE': 'Carla', 'N° AFILIADO': '333' }, r4: { 'APELLIDO Y NOMBRE': 'Dario', 'N° AFILIADO': '444' },
+      r1: { 'APELLIDO Y NOMBRE': 'Ana', 'OBRA SOCIAL': 'INCLUIR SALUD', 'N° AFILIADO': '111' }, r2: { 'APELLIDO Y NOMBRE': 'Beto', 'OBRA SOCIAL': 'INCLUIR SALUD', 'N° AFILIADO': '222' },
+      r3: { 'APELLIDO Y NOMBRE': 'Carla', 'OBRA SOCIAL': 'INCLUIR SALUD', 'N° AFILIADO': '333' }, r4: { 'APELLIDO Y NOMBRE': 'Dario', 'OBRA SOCIAL': 'INCLUIR SALUD', 'N° AFILIADO': '444' },
     });
     sembrar(m.db, 'facturacion', {
       f1: { afiliado: '111', monto: 100, fecha: '2026-11-05' },      // ISO
