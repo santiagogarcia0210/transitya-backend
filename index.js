@@ -34,11 +34,14 @@ app.use(cors({
 
 // Legajos recibe archivos (PDF/fotos en base64, máx. 8 MB) → límite propio, montado antes del parser global.
 app.use('/api/legajos', express.json({ limit: '12mb' }), require('./routes/legajos'));
+// Presupuestos de transporte: la lectura de la impresión de Google Maps lleva archivos en base64 (se mandan de a uno).
+app.use('/api/presupuestos', express.json({ limit: '12mb' }), require('./routes/presupuestos-recorrido')(), require('./routes/presupuestos')());
 
 app.use(express.json({ limit: '5mb' }));
 
 // Rutas
 app.use('/api/dashboard', require('./routes/dashboard'));
+app.use('/api/aranceles', require('./routes/aranceles'));
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/beneficiarios', require('./routes/beneficiarios'));
 app.use('/api/registro',      require('./routes/registro'));
